@@ -1,0 +1,4 @@
+node_modules/
+nexus/dist/
+*.log
+.DS_Store
