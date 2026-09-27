@@ -155,7 +155,7 @@ test('collector: lectura incremental, líneas a medias y reescrituras', async ()
   const f = entryFactory({ sessionId: 's9' });
   const first = jsonl([f.prompt(T0, 'uno'), f.assistant(T0 + 10, [f.text('hecho')], { id: 'x1', stop: 'end_turn' })]);
   fs.set(`${dir}/s9.jsonl`, first);
-  const col = new core.Collector(fs);
+  const col = new core.Collector(fs, { now: fs.now });
   let ch = await col.scan({ full: true });
   assert.deepEqual(ch.sessions, ['s9']);
   assert.equal(col.sessions.s9.runs.length, 1);
@@ -191,7 +191,7 @@ test('collector: subagentes (layout nuevo y antiguo), tareas, planes y registro 
   fs.set(`${dir}/agent-old.jsonl`, jsonl([side.assistant(T0 + 1600, [side.toolUse('Bash', { command: 'pwd' })], { id: 'sa2' })]));
   fs.set('sessions/4242.json', JSON.stringify({ pid: 4242, sessionId: 's1', cwd: '/Users/demo/dev/app', status: 'waiting', waitingFor: 'input needed', entrypoint: 'claude-desktop', startedAt: T0, updatedAt: T0, statusUpdatedAt: T0 + 5000 }));
   fs.set('sessions/4242.10c1.key', 'x');
-  const col = new core.Collector(fs);
+  const col = new core.Collector(fs, { now: fs.now });
   await col.scan({ full: true });
   const s = col.sessions.s1;
   assert.equal(s.counts.tools, 9, '7 propias + 1 del subagente nuevo + 1 del antiguo');
@@ -223,7 +223,7 @@ test('collector: subagentes (layout nuevo y antiguo), tareas, planes y registro 
 test('collector: conserva el historial cuando Claude Code borra archivos', async () => {
   const fs = memFS();
   const dir = seedFS(fs);
-  const col = new core.Collector(fs);
+  const col = new core.Collector(fs, { now: fs.now });
   await col.scan({ full: true });
   fs.remove(`${dir}/s1.jsonl`);
   fs.remove('tasks/s1');
@@ -242,11 +242,11 @@ test('collector: conserva el historial cuando Claude Code borra archivos', async
 test('collector: exportar e importar el estado evita releer los archivos', async () => {
   const fs = memFS();
   seedFS(fs);
-  const a = new core.Collector(fs);
+  const a = new core.Collector(fs, { now: fs.now });
   await a.scan({ full: true });
   const index = JSON.parse(JSON.stringify(a.exportIndex()));
   const sessions = JSON.parse(JSON.stringify(a.sessions));
-  const b = new core.Collector(fs);
+  const b = new core.Collector(fs, { now: fs.now });
   assert.equal(b.importState(index, sessions), true);
   const ch = await b.scan({ full: true });
   assert.deepEqual(ch.sessions, []);

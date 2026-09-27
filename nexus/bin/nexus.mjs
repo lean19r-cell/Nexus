@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer, openBrowser, parseArgs as parseServerArgs, DEFAULT_PORT, Store } from '../server.mjs';
 import { createNodeAdapter, defaultClaudeDir, nexusHome } from '../lib/node-fs.mjs';
 import * as inst from '../lib/install.mjs';
+import * as sc from '../lib/shortcut.mjs';
 
 const require = createRequire(import.meta.url);
 const core = require('../web/js/core.js');
@@ -27,6 +28,9 @@ Panel
   start                Arranca el servidor en primer plano (Ctrl+C para salir)
   stop                 Detiene el servidor en segundo plano
   demo                 Abre el panel con datos de ejemplo
+  shortcut             Crea un acceso directo en el escritorio para abrir el panel con doble clic
+    --dir <carpeta>    Lo crea en otra carpeta en lugar del escritorio
+    --remove           Quita el acceso directo
 
 Consultas (sin abrir el navegador)
   status               Resumen: sesiones que te esperan, trabajando, tareas y planes pendientes
@@ -47,9 +51,10 @@ Instalación
   install              Copia NEXUS a ~/.claude/skills/nexus (skill /nexus)
     --hooks            Añade también los hooks de avisos instantáneos a ~/.claude/settings.json
     --autostart        Con --hooks: arranca el servidor al abrir cualquier sesión de Claude Code
+    --shortcut         Crea también el acceso directo en el escritorio
   hooks --print        Muestra el bloque de hooks para pegarlo a mano
   hooks --remove       Quita los hooks de NEXUS de settings.json
-  uninstall            Quita la skill y los hooks (tu historial en ~/.claude-nexus se conserva)
+  uninstall            Quita la skill, los hooks y el acceso directo (tu historial en ~/.claude-nexus se conserva)
   doctor               Diagnóstico de la instalación
 
 Opciones comunes: --port <n> (por defecto ${DEFAULT_PORT}) · --claude-dir <ruta>
@@ -131,13 +136,24 @@ async function ensureServer(flags) {
   const args = [SERVER, '--port', String(port), '--quiet'];
   if (flags['claude-dir']) args.push('--claude-dir', claudeDir(flags));
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', log, log], windowsHide: true });
+  let exitCode = null;
+  child.on('exit', (code) => { exitCode = code === null ? -1 : code; });
   child.unref();
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 40 && exitCode === null; i++) {
     await new Promise((r) => setTimeout(r, 250));
     const h = await ping(port);
     if (h) return { port, url: `http://127.0.0.1:${port}/`, health: h, started: true };
   }
-  throw new Error(`El servidor no respondió en el puerto ${port}. Revisa ${path.join(dir, 'server.log')}`);
+  const logFile = path.join(dir, 'server.log');
+  if (exitCode !== null) {
+    // El servidor se cerró al arrancar: damos el motivo en lugar de esperar.
+    const tail = (await fsp.readFile(logFile, 'utf8').catch(() => '')).trim().split('\n').pop() || '';
+    if (/en uso|EADDRINUSE/.test(tail)) {
+      throw new Error(`El puerto ${port} está ocupado por otro programa. Ciérralo o arranca NEXUS en otro puerto con --port.`);
+    }
+    throw new Error(`El servidor se cerró al arrancar${tail ? ': ' + tail.replace(/^\[nexus\]\s*/, '') : ''}. Revisa ${logFile}`);
+  }
+  throw new Error(`El servidor no respondió en el puerto ${port}. Revisa ${logFile}`);
 }
 
 // Modelo agregado: del servidor si está en marcha; si no, leyendo ~/.claude directamente.
@@ -428,12 +444,46 @@ async function cmdInstall(flags) {
     console.log(`${mint('✓')} Hooks añadidos a ${file}${flags.autostart ? ' (con arranque automático del servidor)' : ''}`);
     console.log(dim('  Se guardó una copia de seguridad junto al archivo.'));
   }
+  if (flags.shortcut) await makeShortcut(dst, null);
   console.log('');
   console.log('Siguiente paso:');
   console.log(`  1. Reinicia Claude Code (o Claude Desktop) para que cargue la skill.`);
   console.log(`  2. Escribe ${cyan('/nexus')} o pídele «abre el centro de mando» / «¿qué tengo pendiente?».`);
-  console.log(`  3. O abre el panel tú mismo: ${cyan('node "' + path.join(dst, 'bin', 'nexus.mjs') + '" open')}`);
+  console.log(`  3. O abre el panel tú mismo: ${flags.shortcut ? 'doble clic en el icono NEXUS' : cyan('node "' + path.join(dst, 'bin', 'nexus.mjs') + '" open')}`);
   if (!flags.hooks) console.log(dim('  Opcional: node bin/nexus.mjs install --hooks  → avisos instantáneos al panel.'));
+}
+
+const SHORTCUT_TIP = {
+  darwin: 'Doble clic en NEXUS del escritorio. Arrástralo al Dock para tenerlo siempre a mano.',
+  win32: 'Doble clic en NEXUS del escritorio. También aparece al escribir «NEXUS» en el menú Inicio.',
+  linux: 'Doble clic en NEXUS del escritorio, o búscalo en el menú de aplicaciones.'
+};
+
+async function makeShortcut(appDir, dir) {
+  const files = await sc.createShortcut({ appDir, node: process.execPath, dir });
+  files.forEach((f) => console.log(`${mint('✓')} Acceso directo: ${f}`));
+  // En Linux sin carpeta de escritorio solo se crea la entrada del menú.
+  const tip = process.platform === 'linux' && files.length === 1 ? 'Búscalo como NEXUS en el menú de aplicaciones.' : SHORTCUT_TIP[process.platform] || SHORTCUT_TIP.linux;
+  console.log(dim('  ' + tip));
+  return files;
+}
+
+async function cmdShortcut(flags) {
+  const dir = flags.dir ? path.resolve(flags.dir) : null;
+  if (flags.remove) {
+    const removed = await sc.removeShortcut({ dir });
+    if (!removed.length) console.log('No había ningún acceso directo de NEXUS.');
+    removed.forEach((f) => console.log(`${mint('✓')} Quitado: ${f}`));
+    return;
+  }
+  // Preferimos la copia instalada como skill: sigue funcionando aunque borres el repositorio.
+  const installed = path.join(claudeDir(flags), 'skills', 'nexus');
+  const appDir = fs.existsSync(path.join(installed, 'bin', 'nexus.mjs')) ? installed : APP;
+  await makeShortcut(appDir, dir);
+  if (path.resolve(appDir) !== path.resolve(installed)) {
+    console.log(amber('! ') + `Apunta a ${APP}. Si mueves o borras esa carpeta, vuelve a crearlo (o usa «install --shortcut»).`);
+  }
+  console.log(dim(`  Usa el Node de ${process.execPath}; si lo cambias de sitio o de versión, vuelve a crear el acceso directo.`));
 }
 
 async function cmdHooks(flags) {
@@ -465,6 +515,12 @@ async function cmdUninstall(flags) {
     }
   } catch (err) {
     console.log(amber('! ') + err.message);
+  }
+  try {
+    const removed = await sc.removeShortcut({});
+    removed.forEach((f) => console.log(`${mint('✓')} Acceso directo quitado: ${f}`));
+  } catch (err) {
+    console.log(amber('! ') + 'No se pudo quitar el acceso directo: ' + err.message);
   }
   const dst = skillDir(flags);
   if (path.resolve(dst) === APP) {
@@ -529,7 +585,14 @@ async function main() {
     case 'open':
     case 'up':
     case 'demo': {
-      const srv = await ensureServer(flags);
+      let srv;
+      try {
+        srv = await ensureServer(flags);
+      } catch (err) {
+        // Lanzado desde el acceso directo no hay terminal: el error se muestra en una ventana.
+        if (flags.gui) sc.guiAlert('NEXUS no pudo arrancar', err.message);
+        throw err;
+      }
       const url = srv.url + (cmd === 'demo' ? '?demo' : '');
       if (!flags['no-browser']) openBrowser(url);
       console.log(`${cyan('NEXUS')} ${srv.started ? 'arrancado' : 'ya estaba en marcha'} → ${url}`);
@@ -552,6 +615,7 @@ async function main() {
     case 'hooks': return cmdHooks(flags);
     case 'uninstall': return cmdUninstall(flags);
     case 'doctor': return cmdDoctor(flags);
+    case 'shortcut': case 'acceso': return cmdShortcut(flags);
     default:
       console.error(`Comando desconocido: ${cmd}\n`);
       console.log(HELP);
