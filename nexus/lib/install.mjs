@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 // Lo que se copia a ~/.claude/skills/nexus (los tests no hacen falta allí).
-export const APP_ENTRIES = ['SKILL.md', 'README.md', 'package.json', 'server.mjs', 'bin', 'lib', 'hooks', 'web'];
+export const APP_ENTRIES = ['SKILL.md', 'README.md', 'package.json', 'server.mjs', 'bin', 'lib', 'hooks', 'web', 'assets'];
 
 export const HOOK_EVENTS = [
   { event: 'SessionStart' },

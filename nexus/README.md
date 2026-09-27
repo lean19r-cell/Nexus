@@ -29,6 +29,20 @@ node nexus/bin/nexus.mjs open        # arranca el servidor y abre http://127.0.0
 
 Reinicia Claude Code o Claude Desktop y ya puedes escribir `/nexus` o preguntarle «¿qué tengo pendiente?».
 
+### Acceso directo (doble clic)
+
+```bash
+node nexus/bin/nexus.mjs install --shortcut
+```
+
+Crea un icono **NEXUS** en tu escritorio que arranca el servidor si hace falta y abre el panel, sin pasar por la terminal ni por Claude:
+
+- **Mac:** `NEXUS.app` en el Escritorio, sin ventana de terminal. Arrástralo al Dock si lo quieres siempre a mano.
+- **Windows:** `NEXUS.lnk` en el Escritorio y en el menú Inicio (escribe «NEXUS»).
+- **Linux:** lanzador en el escritorio y en el menú de aplicaciones.
+
+Si algo falla al abrirlo, verás un aviso con el motivo (por ejemplo, que el puerto 2077 está ocupado por otro programa). Si cambias de versión de Node o mueves la carpeta, vuelve a crearlo con `node nexus/bin/nexus.mjs shortcut`; para quitarlo, `shortcut --remove`. También puedes pedírselo a Claude: «/nexus crea el acceso directo».
+
 **Avisos instantáneos (opcional).** Sin hooks el panel se actualiza en uno o dos segundos. Con hooks, cada evento llega al momento y el servidor puede arrancar solo al abrir cualquier sesión:
 
 ```bash
@@ -93,7 +107,8 @@ Por debajo usa el CLI:
 | `nexus projects` | Proyectos con categoría, etapa y avance |
 | `nexus tag <categoría> [--etapa X] [--nombre Y]` | Clasifica el proyecto de la carpeta actual |
 | `nexus start` / `stop` | Servidor en primer plano / detenerlo |
-| `nexus install [--hooks] [--autostart]` · `uninstall` | Instalar o quitar la skill y los hooks |
+| `nexus shortcut [--remove]` | Crea (o quita) el acceso directo del escritorio |
+| `nexus install [--hooks] [--autostart] [--shortcut]` · `uninstall` | Instalar o quitar la skill, los hooks y el acceso directo |
 | `nexus doctor` | Diagnóstico de la instalación |
 
 (`nexus` = `node nexus/bin/nexus.mjs`, o `node ~/.claude/skills/nexus/bin/nexus.mjs` una vez instalado.)
@@ -108,7 +123,7 @@ Por debajo usa el CLI:
 | `plans/*.md` | Planes guardados por el modo plan |
 | `sessions/<pid>.json` | Qué sesiones están abiertas y si están trabajando o esperándote |
 
-NEXUS solo lee; nunca escribe en `~/.claude` (salvo `settings.json` cuando instalas hooks, y `skills/nexus` al instalar la skill). Su propia caché, configuración y registro viven en `~/.claude-nexus` (cámbialo con `NEXUS_HOME`). Si usas `CLAUDE_CONFIG_DIR`, NEXUS lo respeta.
+NEXUS solo lee; nunca escribe en `~/.claude` (salvo `settings.json` cuando instalas hooks, y `skills/nexus` al instalar la skill). El acceso directo es el único archivo que crea fuera de esas carpetas. Su propia caché, configuración y registro viven en `~/.claude-nexus` (cámbialo con `NEXUS_HOME`). Si usas `CLAUDE_CONFIG_DIR`, NEXUS lo respeta.
 
 ## Límites conocidos
 
@@ -124,7 +139,8 @@ nexus/
 ├── server.mjs            servidor: escaneo incremental, caché, SSE, hooks, config
 ├── bin/nexus.mjs         CLI
 ├── hooks/emit.mjs        hook que avisa al servidor (silencioso, < 150 ms)
-├── lib/                  adaptador de archivos de Node e instalador
+├── lib/                  adaptador de archivos de Node, instalador y acceso directo
+├── assets/               icono (SVG de origen, .icns, .ico y .png)
 ├── web/
 │   ├── index.html
 │   ├── css/nexus.css     tema cyberpunk
@@ -134,12 +150,13 @@ nexus/
 │       ├── fs-browser.js modo carpeta (File System Access API)
 │       └── demo.js       datos de ejemplo vivos
 ├── tools/build-standalone.mjs   genera un HTML único con todo en línea
+├── tools/build-icons.mjs        regenera los iconos a partir de assets/icon.svg
 └── test/                 node --test
 ```
 
 ```bash
 cd nexus
-npm test                                  # 17 pruebas: parser, colector, modelo, servidor, instalación
+npm test                                  # 22 pruebas: parser, colector, modelo, servidor, instalación, acceso directo
 node tools/build-standalone.mjs           # dist/nexus.html, un único archivo para abrir con doble clic
 ```
 

@@ -74,6 +74,8 @@ export function memFS() {
   let clock = T0;
   const fs = {
     files,
+    // Reloj del sistema simulado, para pasarlo al Collector ({ now: fs.now }).
+    now: () => clock,
     set(rel, content, mtime) {
       files.set(rel, { data: Buffer.from(content), mtime: mtime || (clock += 1000) });
     },

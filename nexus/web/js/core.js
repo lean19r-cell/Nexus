@@ -704,6 +704,8 @@
   function Collector(adapter, opts) {
     this.fs = adapter;
     this.opts = opts || {};
+    // Reloj inyectable: las pruebas usan el de su sistema de archivos simulado.
+    this.now = typeof this.opts.now === 'function' ? this.opts.now : Date.now;
     this.files = {};      // rel -> { size, mtime, off, sid, dir, sub, mid, mu }
     this.sessions = {};   // sid -> estado
     this.taskLists = {};  // listId -> { id, tasks: {id: task}, mtime, files: {name: mtime}, archived }
@@ -1019,7 +1021,7 @@
     for (var sid in hooks) {
       if (!has(hooks, sid) || has(next, sid)) continue;
       var h = hooks[sid];
-      if (Date.now() - h.at > 6 * 60 * 60 * 1000 || h.ended) continue;
+      if (this.now() - h.at > 6 * 60 * 60 * 1000 || h.ended) continue;
       next[sid] = { pid: 0, sid: sid, cwd: h.cwd || null, status: h.status, waitingFor: h.waitingFor || null, name: null, entrypoint: null, kind: null, version: null, startedAt: h.startedAt || h.at, updatedAt: h.at, statusAt: h.at, verified: false, via: 'hook' };
     }
     var before = JSON.stringify(this.live);
@@ -1051,7 +1053,7 @@
    */
   Collector.prototype.scan = async function (opts) {
     opts = opts || {};
-    var now = Date.now();
+    var now = this.now();
     var full = !!opts.full || !this.meta.lastFull;
     var hotCut = now - (opts.hotWindow || HOT_WINDOW);
     var changes = newChanges();
@@ -1087,8 +1089,8 @@
     var ids = Object.keys(taskDirs);
     if (ids.length) {
       // Forzamos que esas listas se consideren calientes.
-      for (var j = 0; j < ids.length; j++) if (has(this.taskLists, ids[j])) this.taskLists[ids[j]].mtime = Date.now();
-      await this._scanTasks(false, Date.now() - HOT_WINDOW, changes);
+      for (var j = 0; j < ids.length; j++) if (has(this.taskLists, ids[j])) this.taskLists[ids[j]].mtime = this.now();
+      await this._scanTasks(false, this.now() - HOT_WINDOW, changes);
     }
     if (plans) await this._scanPlans(false, 0, changes);
     await this._scanLive(changes);
@@ -1100,7 +1102,7 @@
     for (var sid in this.sessions) if (has(this.sessions, sid)) sessions[sid] = publicSession(this.sessions[sid]);
     return {
       version: VERSION,
-      generatedAt: Date.now(),
+      generatedAt: this.now(),
       sessions: sessions,
       taskLists: this.publicTaskLists(),
       plans: this.plans,

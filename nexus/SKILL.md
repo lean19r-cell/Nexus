@@ -21,6 +21,8 @@ Todo se maneja con el CLI que acompaña a esta skill. Su ruta es `bin/nexus.mjs`
 | Marcar el proyecto actual como vídeo, desarrollo, etc. | `NEXUS tag video` (categorías: dev, video, contenido, investigacion, ops, otros) |
 | Fijar la etapa del proyecto actual | `NEXUS tag video --etapa Edición` (o solo `--etapa Deploy`) |
 | Renombrar cómo se ve el proyecto | `NEXUS tag --nombre "Episodio 48"` |
+| Crear un acceso directo en el escritorio (abrir el panel con doble clic) | `NEXUS shortcut` |
+| Quitar el acceso directo | `NEXUS shortcut --remove` |
 | Ver la demo | `NEXUS demo` |
 | Parar el servidor | `NEXUS stop` |
 | Problemas o dudas de instalación | `NEXUS doctor` |

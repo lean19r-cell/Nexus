@@ -43,7 +43,7 @@ test('skill: instala, actualiza y desinstala solo carpetas de NEXUS', async (t) 
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const dst = path.join(dir, 'skills', 'nexus');
   await inst.installApp(APP, dst);
-  for (const entry of ['SKILL.md', 'server.mjs', 'bin/nexus.mjs', 'web/index.html', 'web/js/core.js', 'hooks/emit.mjs']) {
+  for (const entry of ['SKILL.md', 'server.mjs', 'bin/nexus.mjs', 'web/index.html', 'web/js/core.js', 'hooks/emit.mjs', 'lib/shortcut.mjs', 'assets/nexus.icns', 'assets/nexus.ico']) {
     await fs.access(path.join(dst, entry));
   }
   await assert.rejects(fs.access(path.join(dst, 'test')), 'los tests no se copian');
