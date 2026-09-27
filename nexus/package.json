@@ -1,0 +1,19 @@
+{
+  "name": "claude-nexus",
+  "version": "1.0.0",
+  "description": "NEXUS — centro de mando cyberpunk para seguir las tareas, tandas y planes de Claude Code en todos tus proyectos.",
+  "type": "commonjs",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "nexus": "bin/nexus.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "demo": "node server.mjs --demo"
+  }
+}
