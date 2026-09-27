@@ -1623,7 +1623,8 @@
   }
 
   async function tryServer() {
-    if (!/^https?:$/.test(location.protocol)) return false;
+    // Embebido (p. ej. como Artifact) nunca hay servidor de NEXUS detrás.
+    if (!/^https?:$/.test(location.protocol) || S.embedded) return false;
     try {
       var r = await fetch('api/health', { cache: 'no-store' });
       if (!r.ok) return false;
