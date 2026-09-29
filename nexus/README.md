@@ -10,7 +10,7 @@ Claude Code ya escribe en `~/.claude` todo lo que hace: cada conversación, cada
 
 - **Cero tokens y cero fricción.** No cambia cómo trabajas; cualquier sesión, en cualquier carpeta, aparece sola.
 - **Tiempo real.** Ves qué sesión está trabajando, cuál **te espera** (permiso, pregunta o plan por aprobar) y qué tarea tiene entre manos.
-- **Privado.** Todo ocurre en tu ordenador; el servidor solo escucha en `127.0.0.1`.
+- **Privado.** Todo ocurre en tu ordenador; el servidor solo escucha en `127.0.0.1`. Lo único que sale a internet es la consulta de actualizaciones a GitHub, que no envía nada tuyo y se puede apagar en Ajustes.
 - **Historial que no se pierde.** Claude Code borra las transcripciones a los 30 días; NEXUS guarda el resumen en `~/.claude-nexus` y lo sigue mostrando.
 - **Escala.** Probado con 2.000 sesiones y 900 MB de transcripciones: el primer escaneo tarda unos 9 s y después arranca en menos de un segundo gracias a su caché.
 
@@ -29,7 +29,20 @@ node nexus/bin/nexus.mjs open        # arranca el servidor y abre http://127.0.0
 
 Reinicia Claude Code o Claude Desktop y ya puedes escribir `/nexus` o preguntarle «¿qué tengo pendiente?».
 
-**Actualizar:** tras traer una versión nueva vuelve a ejecutar `node nexus/bin/nexus.mjs install` (refresca la skill) y reinicia el servidor con `node nexus/bin/nexus.mjs stop` y luego `open`. La primera vez releerá tus transcripciones para calcular el consumo por día y modelo; tu historial guardado no se pierde.
+### Actualizar
+
+**Desde el panel (lo normal).** NEXUS consulta GitHub cada pocas horas. Cuando hay una versión nueva aparece **↑ Actualización** en la cabecera: púlsalo y, en **Ajustes → Actualizaciones**, **Actualizar ahora**. Descarga solo los archivos que cambian, los instala y reinicia NEXUS; el panel se recarga solo con la versión nueva. Tus datos, tu historial y tus ajustes no se tocan.
+
+- Cada archivo se verifica contra el hash que publica GitHub antes de instalarlo; si algo no coincide o falla la instalación, no queda nada a medias y se restaura la versión anterior. Además queda una copia en `~/.claude-nexus/backup`.
+- **Instalar y reiniciar solo** (apagado por defecto) hace todo lo anterior sin preguntar en cuanto aparece una versión nueva, una sola vez por versión.
+- **Buscar actualizaciones automáticamente** se puede apagar; entonces solo consulta cuando pulsas **Buscar ahora**.
+- Desde la terminal: `node ~/.claude/skills/nexus/bin/nexus.mjs update` (o `--check` para solo mirar, `--restart` para reiniciar al terminar).
+- Después de actualizar, reinicia Claude Code o Claude Desktop para que cargue la skill nueva.
+- Si usas un proxy en tu red, define `HTTPS_PROXY` y `NODE_USE_ENV_PROXY=1` (Node 22.21 o superior).
+
+**La primera vez** (o si lo instalaste con una versión anterior a este botón) hay que hacerlo a mano, porque todavía no tiene el botón: desde tu clon del repositorio, `git pull origin main`, luego `node nexus/bin/nexus.mjs install`, `node nexus/bin/nexus.mjs stop` y `node nexus/bin/nexus.mjs open`. Nunca ejecutes `git` ni `install` dentro de `~/.claude/skills/nexus`: esa carpeta es la copia instalada, no el repositorio.
+
+**Desde un clon de git** el botón no se ofrece (ahí se usa `git pull` y `install`): el panel lo explica. La primera vez tras actualizar, NEXUS releerá tus transcripciones para calcular el consumo por día y modelo; tu historial guardado no se pierde.
 
 ### Acceso directo (doble clic)
 
@@ -127,6 +140,8 @@ Por debajo usa el CLI:
 | `nexus start` / `stop` | Servidor en primer plano / detenerlo |
 | `nexus shortcut [--remove]` | Crea (o quita) el acceso directo del escritorio |
 | `nexus install [--hooks] [--autostart] [--shortcut]` · `uninstall` | Instalar o quitar la skill, los hooks y el acceso directo |
+| `nexus update [--check] [--restart]` | Busca una versión nueva en GitHub y la instala (sin git); `--restart` reinicia el servidor al terminar |
+| `nexus restart` | Reinicia el servidor de NEXUS |
 | `nexus doctor` | Diagnóstico de la instalación |
 
 (`nexus` = `node nexus/bin/nexus.mjs`, o `node ~/.claude/skills/nexus/bin/nexus.mjs` una vez instalado.)
@@ -159,7 +174,7 @@ nexus/
 ├── server.mjs            servidor: escaneo incremental, caché, SSE, hooks, config
 ├── bin/nexus.mjs         CLI
 ├── hooks/emit.mjs        hook que avisa al servidor (silencioso, < 150 ms)
-├── lib/                  adaptador de archivos de Node, instalador y acceso directo
+├── lib/                  adaptador de archivos de Node, instalador, acceso directo y actualizador (update.mjs)
 ├── assets/               icono (SVG de origen, .icns, .ico y .png)
 ├── web/
 │   ├── index.html
@@ -176,7 +191,7 @@ nexus/
 
 ```bash
 cd nexus
-npm test                                  # 30 pruebas: parser, colector, modelo, consumo, servidor, CLI, instalación, acceso directo
+npm test                                  # 47 pruebas: parser, colector, modelo, consumo, servidor, CLI, instalación, acceso directo, actualizaciones
 node tools/build-standalone.mjs           # dist/nexus.html, un único archivo para abrir con doble clic
 ```
 

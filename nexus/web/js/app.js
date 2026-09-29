@@ -67,6 +67,9 @@
     expanded: {},
     prev: {},
     primed: false,
+    update: null,
+    boot: null,
+    restarting: false,
     activeRuns: {},
     taskSt: {},
     fresh: true,
@@ -1300,6 +1303,98 @@
       '</div></div></div>';
   }
 
+  // ───────────────────────────────────────────────────────────── actualizaciones
+
+  // Un aviso por versión nueva y navegador (no cada vez que se abre el panel).
+  function noteUpdate() {
+    var u = S.update;
+    if (!S.p.toasts || !u || !u.available || !u.latest) return;
+    var seen = null;
+    try { seen = localStorage.getItem('nexus.update.seen'); } catch (e) { /* sin almacenamiento */ }
+    if (seen === u.latest.sha) return;
+    try { localStorage.setItem('nexus.update.seen', u.latest.sha); } catch (e) { /* sin almacenamiento */ }
+    toast('done', 'Actualización disponible', 'Hay una versión nueva de NEXUS. Pulsa para actualizar.', '#/settings');
+  }
+
+  function updateRequest(kind) {
+    fetch('api/update/' + kind, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(function (r) { return r.json(); })
+      .then(function (st) {
+        S.update = st;
+        updateChrome();
+        requestRender();
+        // «Actualizar ahora» hace todo: en cuanto queda instalada, se reinicia solo.
+        if (kind === 'install' && st.needsRestart && !st.error) restartNow();
+      })
+      .catch(function () { toast('warn', 'Actualizaciones', 'El servidor de NEXUS no respondió.'); });
+  }
+
+  function restartNow() {
+    S.restarting = true;
+    requestRender();
+    fetch('api/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .catch(function () {
+        S.restarting = false;
+        requestRender();
+        toast('warn', 'Reinicio', 'El servidor de NEXUS no respondió.');
+      });
+    // Si el servidor no vuelve, no se deja el panel esperando para siempre.
+    setTimeout(function () {
+      if (!S.restarting) return;
+      S.restarting = false;
+      requestRender();
+      toast('warn', 'NEXUS no volvió', 'Ábrelo de nuevo con «node nexus/bin/nexus.mjs open».');
+    }, 40000);
+  }
+
+  function updatePanel() {
+    var u = S.update;
+    var head = '<section class="panel" id="upd-panel"><div class="panel-h"><h2>Actualizaciones</h2><div class="meta">v' + esc(C.VERSION) + '</div></div><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">';
+    var tail = '</div></section>';
+    var note = function (t, cls) { return '<p class="upd-note' + (cls ? ' ' + cls : '') + '">' + t + '</p>'; };
+    var state = function (st, t) { return '<div class="upd-state">' + orb(st) + t + '</div>'; };
+    var btns = function (html) { return '<div class="toolbar">' + html + '</div>'; };
+    if (S.source !== 'server') {
+      return head + note('Las actualizaciones se gestionan desde el servidor local. Ábrelo con <span class="mono">node nexus/bin/nexus.mjs open</span>.') + tail;
+    }
+    if (!u) return head + note('Comprobando…') + tail;
+    if (!u.supported) {
+      return head + state('idle', 'Este NEXUS no se actualiza desde el panel') + note(esc(u.message || 'Las actualizaciones no están disponibles.')) + tail;
+    }
+    var busy = u.checking || u.installing || S.restarting;
+    var sha = u.latest && u.latest.sha ? u.latest.sha.slice(0, 7) : '';
+    var check = '<button class="btn ghost" type="button" data-act="update-check"' + (busy ? ' disabled' : '') + '>Buscar ahora</button>';
+    var body;
+    if (S.restarting) {
+      body = state('working', 'Reiniciando NEXUS…') + note('El panel se recargará solo cuando vuelva (unos segundos).');
+    } else if (u.installing) {
+      body = state('working', 'Descargando e instalando…') + note('No cierres esta ventana.');
+    } else if (u.needsRestart) {
+      body = state('done', 'Actualización instalada' + (u.installed ? ' <span class="mono dim">' + esc(u.installed.sha.slice(0, 7)) + '</span>' : '')) +
+        note('Falta reiniciar NEXUS para estrenarla.') + btns('<button class="btn primary" type="button" data-act="update-restart">Reiniciar ahora</button>');
+    } else if (u.available) {
+      var n = u.changes ? u.changes.changed + u.changes.added + u.changes.removed : 0;
+      body = state('waiting', 'Hay una versión nueva') +
+        note('«' + esc(u.latest.message || sha) + '»' + (u.latest.date ? ' · ' + esc(C.fmtDate(u.latest.date, S.model.now)) : '') + (n ? ' · ' + esc(plural(n, 'archivo cambia', 'archivos cambian')) : '')) +
+        btns('<button class="btn primary" type="button" data-act="update-install"' + (busy ? ' disabled' : '') + '>Actualizar ahora</button>' + check) +
+        note('Descarga la versión nueva, la instala y reinicia NEXUS (unos segundos). Tus datos y ajustes no se tocan.');
+    } else if (u.error) {
+      body = state('error', 'No se pudo comprobar') + note(esc(u.error), 'err') + btns(check.replace('Buscar ahora', 'Reintentar'));
+    } else if (u.checkedAt) {
+      body = state('done', 'NEXUS está al día') + note((sha ? 'Versión ' + esc(sha) + ' · ' : '') + 'comprobado ' + esc(ago(u.checkedAt))) + btns(check);
+    } else {
+      body = state('idle', 'Aún no se ha comprobado') + btns(check);
+    }
+    var sw = function (key, title, sub, on, off) {
+      return '<label class="switch"><input type="checkbox" id="upd-' + key + '" data-cfg="ui" data-key="' + key + '"' + (on ? ' checked' : '') + (off ? ' disabled' : '') + '><span>' + title + '<small>' + sub + '</small></span></label>';
+    };
+    return head + body +
+      '<div style="border-top:1px solid var(--line);padding-top:8px">' +
+      sw('updateCheck', 'Buscar actualizaciones automáticamente', 'Cada pocas horas; solo consulta GitHub.', u.settings.check, false) +
+      sw('autoUpdate', 'Instalar y reiniciar solo', 'Descarga la versión nueva de GitHub y reinicia NEXUS sin preguntar. Apagado por defecto.', u.settings.install, !u.settings.check) + '</div>' +
+      note('Solo se consulta github.com/lean19r-cell/Nexus y no se envía nada tuyo. La versión anterior queda guardada en <span class="mono">~/.claude-nexus/backup</span>.') + tail;
+  }
+
   function vSettings(m) {
     var meta = S.data.meta || {};
     var src = S.source === 'server' ? 'Servidor local' + (S.server ? ' · v' + esc(S.server.version) : '') : S.source === 'folder' ? 'Carpeta en el navegador' : 'Demo';
@@ -1352,6 +1447,7 @@
       (priceRows ? '<div class="panel-b flush tablewrap"><table class="grid plain"><thead><tr><th>Modelo</th><th class="n">Entrada</th><th class="n">Salida</th><th class="n">Caché leída</th><th class="n">Caché escrita</th><th></th></tr></thead><tbody>' + priceRows + '</tbody></table></div>' : '<div class="panel-b">' + empty('Aún no se ha visto ningún modelo.') + '</div>') +
       '<div class="panel-f"><span class="dim">Estimación con precios de lista revisados el ' + esc(m.usage.checked) + '. Si dejas caché vacía se calcula desde la entrada. Solo hace falta para el coste de la vista Consumo.</span></div></section>' +
       '</div><div class="stack">' +
+      updatePanel() +
       '<section class="panel"><div class="panel-h"><h2>Avisos</h2></div><div class="panel-b">' +
       sw('toasts', 'Avisos dentro de NEXUS', 'Cuando una sesión te necesita o termina una tanda o una tarea.') +
       sw('notify', 'Notificaciones del sistema', 'Solo si la pestaña está en segundo plano.') +
@@ -1652,6 +1748,15 @@
     setCount('n-sessions', m.kpis.waiting);
     setCount('n-plans', m.kpis.plansPending);
     setCount('n-tasks', 0);
+    var ub = $('#update-btn');
+    var up = S.update;
+    var showUpdate = S.source === 'server' && !!up && up.supported && (up.available || up.needsRestart || up.installing || S.restarting);
+    ub.hidden = !showUpdate;
+    if (showUpdate) {
+      var utxt = S.restarting ? 'Reiniciando…' : up.installing ? 'Instalando…' : up.needsRestart ? '↻ Reiniciar' : '↑ Actualización';
+      if (ub.textContent !== utxt) ub.textContent = utxt;
+      ub.classList.toggle('busy', !!(S.restarting || up.installing));
+    }
     var ab = $('#alert-btn');
     ab.hidden = !m.kpis.waiting;
     $('#alert-n').textContent = m.kpis.waiting;
@@ -1869,6 +1974,15 @@
         saveConfig();
         scheduleModel(true);
         break;
+      case 'update-check':
+        updateRequest('check');
+        break;
+      case 'update-install':
+        updateRequest('install');
+        break;
+      case 'update-restart':
+        restartNow();
+        break;
       case 'stage-step':
         var sp = S.model.projectMap[key];
         var sl = sp ? C.STAGES[sp.category] || C.STAGES.other : null;
@@ -1970,6 +2084,13 @@
     var key = el.getAttribute('data-key');
     var field = el.getAttribute('data-cfg');
     if (field === 'price') { setPrice(el); return; }
+    if (field === 'ui') {
+      // Interruptores guardados en la configuración del servidor (p. ej. las actualizaciones automáticas).
+      S.config.ui = Object.assign({}, S.config.ui);
+      S.config.ui[key] = el.checked;
+      saveConfig();
+      return;
+    }
     if (field === 'check') {
       var checks = Object.assign({}, (S.config.projects[key] || {}).checks || {});
       if (el.checked) checks[el.getAttribute('data-item')] = true;
@@ -2048,6 +2169,14 @@
     if (a) { closeSearch(); $('#q').value = ''; }
   });
 
+  $('#update-btn').addEventListener('click', function () {
+    go('#/settings');
+    setTimeout(function () {
+      var panel = document.getElementById('upd-panel');
+      if (panel) panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 150);
+  });
+
   $('#alert-btn').addEventListener('click', function () {
     S.p.sst = 'waiting';
     savePrefs();
@@ -2101,7 +2230,8 @@
     S.ready = snap.ready !== false;
     if (snap.config) S.config = C.normalizeConfig(snap.config);
     if (snap.claudeDir) S.claudeDir = snap.claudeDir;
-    if (snap.server) S.server = snap.server;
+    if (snap.server) { S.server = snap.server; if (snap.server.boot) S.boot = snap.server.boot; }
+    if (snap.update) { S.update = snap.update; noteUpdate(); }
     scheduleModel(true);
   }
 
@@ -2166,7 +2296,26 @@
       S.link = 'live';
       updateChrome();
       var h = JSON.parse(e.data);
+      // El servidor se reinició (p. ej. tras actualizar): se recarga la página para estrenar los archivos nuevos.
+      if (S.boot && h.boot && h.boot !== S.boot) {
+        try { sessionStorage.setItem('nexus.restarted', '1'); } catch (err) { /* sin almacenamiento */ }
+        location.reload();
+        return;
+      }
+      if (h.boot) S.boot = h.boot;
+      try {
+        if (sessionStorage.getItem('nexus.restarted')) {
+          sessionStorage.removeItem('nexus.restarted');
+          toast('done', 'NEXUS reiniciado', 'Ya corre la versión nueva. Reinicia Claude Code o Claude Desktop para que cargue la skill actualizada.');
+        }
+      } catch (err) { /* sin almacenamiento */ }
       if (h.seq !== S.seq && !S.loading) loadServerSnapshot();
+    });
+    es.addEventListener('update', function (e) {
+      S.update = JSON.parse(e.data);
+      noteUpdate();
+      updateChrome();
+      requestRender();
     });
     es.addEventListener('delta', function (e) {
       var d = JSON.parse(e.data);

@@ -11,6 +11,7 @@ import { startServer, openBrowser, parseArgs as parseServerArgs, DEFAULT_PORT, S
 import { createNodeAdapter, defaultClaudeDir, nexusHome } from '../lib/node-fs.mjs';
 import * as inst from '../lib/install.mjs';
 import * as sc from '../lib/shortcut.mjs';
+import * as upd from '../lib/update.mjs';
 
 const require = createRequire(import.meta.url);
 const core = require('../web/js/core.js');
@@ -50,6 +51,12 @@ Organización
     --fecha <AAAA-MM-DD>  Fecha objetivo (p. ej. de publicación de un vídeo); «ninguna» la quita
     --proyecto <ruta>  Otra carpeta de proyecto en lugar de la actual
 
+Actualización (sin git; también está el botón en Ajustes del panel)
+  update               Busca una versión nueva en GitHub y la instala
+    --check            Solo comprueba, no instala
+    --restart          Reinicia el servidor al terminar para estrenar la versión
+  restart              Reinicia el servidor de NEXUS
+
 Instalación
   install              Copia NEXUS a ~/.claude/skills/nexus (skill /nexus)
     --hooks            Añade también los hooks de avisos instantáneos a ~/.claude/settings.json
@@ -81,7 +88,7 @@ function parse(argv) {
   return out;
 }
 
-const VALUE_FLAGS = new Set(['port', 'claude-dir', 'project', 'proyecto', 'etapa', 'stage', 'nombre', 'name', 'dir', 'home', 'days', 'fecha', 'due']);
+const VALUE_FLAGS = new Set(['port', 'claude-dir', 'project', 'proyecto', 'etapa', 'stage', 'nombre', 'name', 'dir', 'home', 'days', 'fecha', 'due', 'wait-pid']);
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -138,6 +145,7 @@ async function ensureServer(flags) {
   const log = fs.openSync(path.join(dir, 'server.log'), 'a');
   const args = [SERVER, '--port', String(port), '--quiet'];
   if (flags['claude-dir']) args.push('--claude-dir', claudeDir(flags));
+  if (flags.home) args.push('--home', dir);
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', log, log], windowsHide: true });
   let exitCode = null;
   child.on('exit', (code) => { exitCode = code === null ? -1 : code; });
@@ -498,6 +506,81 @@ async function cmdTag(flags, pos) {
   console.log(dim(`  ${key}`));
 }
 
+// ───────────────────────────────────────────────────────────── actualización y reinicio
+
+async function waitForExit(pid, ms) {
+  const end = Date.now() + ms;
+  for (;;) {
+    try { process.kill(pid, 0); } catch { return true; }
+    if (Date.now() >= end) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+// Con --wait-pid (lo usa el propio servidor al reiniciarse) espera a que ese proceso termine; sin él, detiene el que esté en marcha.
+async function cmdRestart(flags) {
+  const waitPid = Number(flags['wait-pid']);
+  const running = await runningServer(flags);
+  if (waitPid) {
+    if (!(await waitForExit(waitPid, 10000))) {
+      try { process.kill(waitPid, 'SIGTERM'); } catch { /* ya terminó */ }
+      await waitForExit(waitPid, 5000);
+    }
+  } else if (running) {
+    process.kill(running.health.pid, 'SIGTERM');
+    if (!(await waitForExit(running.health.pid, 10000))) {
+      console.error('El servidor no se cerró a tiempo; ciérralo a mano y vuelve a intentarlo.');
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const srv = await ensureServer(flags);
+  console.log(`${cyan('NEXUS')} ${srv.started ? 'reiniciado' : 'ya estaba en marcha'} → ${srv.url}`);
+}
+
+async function cmdUpdate(flags) {
+  const support = upd.selfUpdateSupport(APP);
+  if (!support.ok) {
+    console.error(amber('! ') + support.message);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(dim('Consultando GitHub…'));
+  let r;
+  try {
+    r = await upd.checkForUpdate({ appDir: APP });
+  } catch (err) {
+    console.error(red('✗ ') + err.message);
+    process.exitCode = 1;
+    return;
+  }
+  const when = r.latest.date ? ', ' + new Date(r.latest.date).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  if (!r.available) {
+    console.log(`${mint('✓')} NEXUS está al día (${r.latest.sha.slice(0, 7)}${when}).`);
+    return;
+  }
+  const d = r.diff;
+  console.log(`${bold('Hay una versión nueva')} (${r.latest.sha.slice(0, 7)}${when}): «${r.latest.message}»`);
+  console.log(dim(`  ${d.changed.length} archivos cambiados, ${d.added.length} nuevos, ${d.removed.length} quitados`));
+  if (flags.check) {
+    console.log('Instálala con: node bin/nexus.mjs update');
+    return;
+  }
+  try {
+    await upd.applyUpdate({ appDir: APP, latest: r.latest, diff: d, backupDir: path.join(home(flags), 'backup', 'app') });
+  } catch (err) {
+    console.error(red('✗ ') + err.message);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`${mint('✓')} Actualización instalada. ${dim('(La versión anterior queda en ' + path.join(home(flags), 'backup', 'app') + ')')}`);
+  const running = await runningServer(flags);
+  if (running && flags.restart) await cmdRestart(flags);
+  else if (running) console.log('El servidor sigue con la versión anterior: reinícialo con «node bin/nexus.mjs restart» o desde el panel (Ajustes → Actualizaciones).');
+  else console.log('Abre el panel con «node bin/nexus.mjs open».');
+  console.log(dim('Reinicia Claude Code o Claude Desktop para que cargue la skill actualizada.'));
+}
+
 // ───────────────────────────────────────────────────────────── instalación
 
 function skillDir(flags) {
@@ -692,6 +775,8 @@ async function main() {
     case 'hooks': return cmdHooks(flags);
     case 'uninstall': return cmdUninstall(flags);
     case 'doctor': return cmdDoctor(flags);
+    case 'update': case 'actualizar': return cmdUpdate(flags);
+    case 'restart': case 'reiniciar': return cmdRestart(flags);
     case 'shortcut': case 'acceso': return cmdShortcut(flags);
     default:
       console.error(`Comando desconocido: ${cmd}\n`);
