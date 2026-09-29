@@ -65,6 +65,7 @@ Para ver cómo se ve sin tus datos: `node nexus/bin/nexus.mjs demo`.
 |---|---|
 | **Mando** | Qué sesiones trabajan o te esperan ahora, tareas abiertas, lo completado hoy, actividad de 24 h, mapa de 26 semanas y registro en vivo de cada herramienta que usa Claude. |
 | **Proyectos** | Una ficha por carpeta con categoría (desarrollo, vídeo, contenido, investigación, ops), etapa, avance de tareas y actividad. Los worktrees se agrupan con su repositorio. |
+| **Seguimiento** | Tandas y tareas **juntas**, por estado: *Te esperan · En curso · Pendientes · Terminadas · Con problemas* (tandas interrumpidas o con errores). Filtra por proyecto, por tipo (tandas/tareas) y por periodo para lo terminado, o mira la matriz **Por proyecto** con los contadores de cada estado. |
 | **Tareas** | Tablero *En curso / Pendientes / Bloqueadas / Completadas* de todos los proyectos, o agrupado por proyecto. Las tareas abiertas de sesiones cerradas hace días se marcan como abandonadas y no inflan los contadores. |
 | **Planes** | Cada plan del modo plan con su estado (pendiente, aprobado, rechazado, borrador) y su texto renderizado. |
 | **Tandas** | Cada instrucción tuya y lo que Claude hizo para cumplirla: duración, herramientas, archivos editados, tokens, errores e interrupciones. |
@@ -72,7 +73,7 @@ Para ver cómo se ve sin tus datos: `node nexus/bin/nexus.mjs demo`.
 | **Consumo** | Tokens y coste **estimado** por día (o semana), proyecto y modelo, con la lectura de caché. Usa los precios de lista de la API, que puedes corregir en Ajustes; un modelo sin precio muestra solo tokens. |
 | **Ajustes** | Categoría, etapa y visibilidad de cada proyecto, precios de los modelos, avisos (en el panel, del sistema, con sonido) y efectos visuales. |
 
-Atajos: `/` busca en todo, `1`–`8` cambian de vista (siguen el orden del menú lateral), `Esc` cierra.
+Atajos: `/` busca en todo, `1`–`9` cambian de vista (siguen el orden del menú lateral), `Esc` cierra.
 
 ### Avisos con sonido
 

@@ -25,7 +25,8 @@
     rsrc: 'all', rst: 'all', rrange: '7',
     sst: 'all', ssort: 'updatedAt', sdir: -1,
     plst: 'all', heatTable: false, actTable: false,
-    urange: '30', umetric: 'cost'
+    urange: '30', umetric: 'cost',
+    fview: 'board', fkind: 'all', frange: 'today'
   };
 
   function loadPrefs() {
@@ -48,7 +49,7 @@
 
   // ───────────────────────────────────────────────────────────── estado
 
-  var VIEWS_OK = { overview: 1, projects: 1, project: 1, tasks: 1, plans: 1, runs: 1, sessions: 1, session: 1, usage: 1, settings: 1 };
+  var VIEWS_OK = { overview: 1, projects: 1, project: 1, tasks: 1, plans: 1, runs: 1, sessions: 1, session: 1, follow: 1, usage: 1, settings: 1 };
 
   var S = {
     source: null,
@@ -959,6 +960,113 @@
 
   // ───────────────────────────────────────────────────────────── vista: ajustes
 
+  // ───────────────────────────────────────────────────────────── vista: seguimiento
+
+  // Tandas y tareas juntas, por estado: te esperan · en curso · pendientes · terminadas · con problemas.
+  var FOLLOW_COLS = [['wait', 'Te esperan'], ['in_progress', 'En curso'], ['pending', 'Pendientes'], ['completed', 'Terminadas'], ['problem', 'Con problemas']];
+
+  function followItems(m) {
+    var q = (S.t.q.follow || '').toLowerCase().trim();
+    var proj = S.t.proj.follow || '';
+    var kind = S.p.fkind;
+    var from = since(S.p.frange, m.now);
+    var items = [];
+    var keep = function (key, text) { return (!proj || key === proj) && (!q || (text + ' ' + projName(key)).toLowerCase().indexOf(q) >= 0); };
+    if (kind !== 'task') {
+      m.runs.forEach(function (r) {
+        var st = runStatus(r);
+        var col = st === 'wait' ? 'wait' : st === 'run' ? 'in_progress' : st === 'ok' ? 'completed' : 'problem';
+        var t = r.e || r.t;
+        if ((col === 'completed' || col === 'problem') && from && t < from) return;
+        if (keep(r.key, r.p + ' ' + (r.res || ''))) items.push({ kind: 'run', col: col, t: t, key: r.key, r: r });
+      });
+    }
+    if (kind !== 'run') {
+      m.tasks.forEach(function (tk) {
+        if (tk.stale) return;
+        var col = tk.status === 'completed' ? 'completed' : tk.status === 'in_progress' ? 'in_progress' : 'pending';
+        var t = col === 'completed' ? (tk.completedAt || tk.updated) : tk.updated;
+        if (col === 'completed' && from && t < from) return;
+        if (keep(tk.key, tk.subject + ' ' + (tk.description || ''))) items.push({ kind: 'task', col: col, t: t, key: tk.key, tk: tk });
+      });
+    }
+    return items;
+  }
+
+  function followCard(it) {
+    var chipHtml = chip(projCat(it.key), projName(it.key));
+    if (it.kind === 'task') {
+      var tk = it.tk;
+      return '<a class="tcard' + (tk.status === 'completed' ? ' done' : '') + (tk.blocked ? ' is-blocked' : '') + '" href="' + (tk.sessionId ? hrefSession(tk.sessionId) : hrefProject(tk.key)) + '" data-key="fk-' + esc(tk.uid) + '">' +
+        '<div class="subj">' + esc(tk.subject) + '</div>' +
+        (tk.status === 'in_progress' && tk.activeForm ? '<div class="af">▸ ' + esc(tk.activeForm) + '</div>' : '') +
+        (tk.blocked ? '<div class="blk">Espera a ' + esc(tk.blockedBy.map(function (x) { return '#' + x; }).join(', ')) + '</div>' : '') +
+        '<div class="foot">' + chipHtml + '<span class="tag k-task">TAREA</span><span class="t">' + esc(ago(it.t)) + '</span></div></a>';
+    }
+    var r = it.r;
+    var st = runStatus(r);
+    var s = S.model.sessionMap[r.sessionId];
+    var live = st === 'run' || st === 'wait';
+    var line = st === 'wait' ? waitText(s && s.waitingFor) : st === 'run' && s ? sessionNow(s) : (r.res || '');
+    return '<a class="tcard' + (st === 'ok' ? ' done' : '') + '" href="' + hrefSession(r.sessionId) + '" data-key="fk-' + esc(r.id) + '">' +
+      '<div class="subj clamp">' + esc(r.p) + '</div>' +
+      (line ? '<div class="' + (live ? 'af' : 'sum') + '">' + (live ? '▸ ' : '') + esc(C.trunc(line, 140)) + '</div>' : '') +
+      (r.err ? '<div class="blk bad">' + plural(r.err, 'error', 'errores') + '</div>' : st === 'int' ? '<div class="blk">Interrumpida</div>' : '') +
+      '<div class="foot">' + chipHtml + '<span class="tag k-run">TANDA</span><span class="mono">' + esc(C.fmtDur(Math.max(0, (r.e || r.t) - r.t))) + ' · ' + r.tools + ' herr.</span><span class="t">' + esc(ago(it.t)) + '</span></div></a>';
+  }
+
+  function vFollow(m) {
+    var proj = S.t.proj.follow || '';
+    var items = followItems(m);
+    var cols = {};
+    FOLLOW_COLS.forEach(function (c) { cols[c[0]] = []; });
+    items.forEach(function (it) { cols[it.col].push(it); });
+    var rank = function (it) { return it.kind === 'run' ? 0 : it.tk.blocked ? 2 : 1; };
+    FOLLOW_COLS.forEach(function (c) {
+      cols[c[0]].sort(function (a, b) {
+        if (c[0] === 'pending' || c[0] === 'in_progress') { var d = rank(a) - rank(b); if (d) return d; }
+        return b.t - a.t;
+      });
+    });
+    var n = function (c) { return cols[c].length; };
+    var range = { today: 'hoy', '7': 'en 7 días', '30': 'en 30 días', all: 'en total' }[S.p.frange];
+    var toolbar = searchBox('follow', 'Buscar en tandas y tareas') + projectSelect('follow', proj) +
+      seg('fview', [['board', 'Tablero'], ['projects', 'Por proyecto']], S.p.fview, 'Vista') +
+      seg('fkind', [['all', 'Todo'], ['run', 'Tandas'], ['task', 'Tareas']], S.p.fkind, 'Tipo') +
+      seg('frange', [['today', 'Hoy'], ['7', '7 días'], ['30', '30 días'], ['all', 'Siempre']], S.p.frange, 'Terminadas y con problemas');
+    var body;
+    if (S.p.fview === 'projects') {
+      var byProject = {};
+      items.forEach(function (it) {
+        var rec = byProject[it.key] || (byProject[it.key] = { key: it.key, wait: 0, in_progress: 0, pending: 0, completed: 0, problem: 0 });
+        rec[it.col]++;
+      });
+      var rows = Object.keys(byProject).map(function (k) { return byProject[k]; }).sort(function (a, b) {
+        return (b.wait - a.wait) || (b.in_progress - a.in_progress) || (b.pending - a.pending) || projName(a.key).localeCompare(projName(b.key), 'es');
+      });
+      var cell = function (v, c) { return '<td class="n">' + (v ? '<span class="cnt ' + c + '">' + v + '</span>' : '<span class="dim">·</span>') + '</td>'; };
+      body = '<section class="panel"><div class="panel-b flush tablewrap"><table class="grid"><thead><tr><th>Proyecto</th>' +
+        FOLLOW_COLS.map(function (c) { return '<th class="n">' + c[1] + '</th>'; }).join('') + '<th></th></tr></thead><tbody>' +
+        (rows.length ? rows.map(function (r) {
+          var p = m.projectMap[r.key];
+          return '<tr data-href="' + hrefProject(r.key) + '" data-key="fp-' + esc(r.key) + '"><td class="ttl"><div>' + chip(projCat(r.key)) + ' <a href="' + hrefProject(r.key) + '" style="color:var(--ice)">' + esc(projName(r.key)) + '</a></div>' +
+            (p && p.current ? '<small>▸ ' + esc(C.trunc(p.current.x, 90)) + '</small>' : '') + '</td>' +
+            cell(r.wait, 'wait') + cell(r.in_progress, 'in_progress') + cell(r.pending, 'pending') + cell(r.completed, 'completed') + cell(r.problem, 'problem') +
+            '<td class="n"><button class="btn small ghost" type="button" data-act="follow-proj" data-key="' + esc(r.key) + '">Tablero</button></td></tr>';
+        }).join('') : '<tr><td colspan="7">' + empty('Nada con estos filtros.') + '</td></tr>') + '</tbody></table></div></section>';
+    } else {
+      body = '<div class="kanban k5">' + FOLLOW_COLS.map(function (c) {
+        var list = cols[c[0]];
+        var lim = limit('fcol-' + c[0], 30);
+        return '<section class="panel col ' + c[0] + '"><div class="panel-h"><h2>' + c[1] + '</h2><div class="meta">' + list.length + '</div></div>' +
+          '<div class="tcards">' + (list.length ? list.slice(0, lim).map(followCard).join('') + moreBtn('fcol-' + c[0], lim, list.length, 30) : '<div class="empty" style="padding:14px 6px">Nada aquí.</div>') + '</div></section>';
+      }).join('') + '</div>';
+    }
+    return '<div class="page power-on">' +
+      pageHead('Segui<span class="accent">miento</span>', (n('wait') ? '<b>' + n('wait') + '</b> te esperan · ' : '') + '<b>' + n('in_progress') + '</b> en curso · <b>' + n('pending') + '</b> pendientes · <b>' + n('completed') + '</b> terminadas ' + range + ' · <b>' + n('problem') + '</b> con problemas. Tandas y tareas juntas, por estado.') +
+      '<div class="toolbar">' + toolbar + '</div>' + body + '</div>';
+  }
+
   // ───────────────────────────────────────────────────────────── vista: consumo
 
   var modelName = C.modelName;
@@ -1142,7 +1250,7 @@
     return '<div class="page power-on">' + pageHead(esc(title), 'Puede que se haya borrado o que el enlace sea de otra fuente de datos.') + '<div><a class="btn" href="' + back + '">' + esc(label) + '</a></div></div>';
   }
 
-  var VIEWS = { overview: vOverview, projects: vProjects, project: vProject, tasks: vTasks, plans: vPlans, runs: vRuns, sessions: vSessions, session: vSession, usage: vUsage, settings: vSettings };
+  var VIEWS = { overview: vOverview, projects: vProjects, project: vProject, tasks: vTasks, plans: vPlans, runs: vRuns, sessions: vSessions, session: vSession, follow: vFollow, usage: vUsage, settings: vSettings };
 
   // ───────────────────────────────────────────────────────────── morph del DOM
 
@@ -1630,6 +1738,12 @@
         saveConfig();
         scheduleModel(true);
         break;
+      case 'follow-proj':
+        S.t.proj.follow = key;
+        S.p.fview = 'board';
+        savePrefs();
+        render();
+        break;
       case 'test-sound':
         playSound(el.getAttribute('data-sound'));
         break;
@@ -1671,6 +1785,7 @@
     if (k === 'plans') return 80;
     if (k === 'projects') return 60;
     if (k === 'uproj') return 15;
+    if (k.indexOf('fcol-') === 0) return 30;
     if (k.indexOf('col-') === 0) return 40;
     if (k === 'sd-runs') return 40;
     if (k === 'pd-tasks') return 30;
