@@ -433,6 +433,48 @@ test('formato: dólares estimados', () => {
   assert.match(core.fmtUsd(1234.56), /^\$1\.?235$/);
 });
 
+test('flujo de vídeo: lista por etapa, fecha objetivo y datos no válidos', () => {
+  const mk = (id, cwd, t) => {
+    const f = entryFactory({ sessionId: id, cwd });
+    return core.publicSession(ingestAll(core.createSessionState(id), [f.prompt(t, 'hola'), f.assistant(t + 1000, [f.text('ok')], { id: 'x' + id, stop: 'end_turn' })]));
+  };
+  const now = T0 + DAY;
+  const data = {
+    sessions: { a: mk('a', '/Users/demo/youtube/ep-12', now - 3600000), b: mk('b', '/Users/demo/youtube/ep-13', now - 3600000), c: mk('c', '/Users/demo/dev/app', now - 3600000) },
+    taskLists: {}, plans: {}, live: {}
+  };
+  const cfg = {
+    projects: {
+      '/Users/demo/youtube/ep-12': { stage: 'Guion', due: '2026-10-05', checks: { 'guion-gancho': true, 'idea-tema': true, 'guion-escrito': false, ['x'.repeat(50)]: true, malo: 'sí' } },
+      '/Users/demo/youtube/ep-13': { stage: 'Edición', due: '2026-02-30', checks: 'nada' }
+    }
+  };
+  const m = core.buildModel(data, cfg, now);
+  const ep12 = m.projectMap['/Users/demo/youtube/ep-12'];
+  assert.equal(ep12.category, 'video');
+  assert.equal(ep12.due, '2026-10-05');
+  assert.deepEqual(ep12.checks, { 'guion-gancho': true, 'idea-tema': true }, 'solo se conservan marcas verdaderas y con id razonable');
+  assert.equal(ep12.flow.index, 1);
+  assert.deepEqual(ep12.flow.items.map((i) => [i.id, i.done]), [['guion-gancho', true], ['guion-escrito', false], ['guion-revisado', false]]);
+  assert.deepEqual(ep12.flow.stages.map((s) => [s.name, s.done, s.total]), [['Idea', 1, 3], ['Guion', 1, 3], ['Grabación', 0, 3], ['Edición', 0, 4], ['Miniatura', 0, 3], ['Publicado', 0, 3]]);
+  assert.equal(ep12.flow.done, 2);
+  assert.equal(ep12.flow.total, 19);
+
+  const ep13 = m.projectMap['/Users/demo/youtube/ep-13'];
+  assert.equal(ep13.due, null, 'el 30 de febrero no existe');
+  assert.deepEqual(ep13.checks, {});
+  assert.equal(ep13.flow.items.length, 4);
+  assert.equal(m.projectMap['/Users/demo/dev/app'].flow, null, 'solo el vídeo tiene lista de comprobación');
+
+  assert.deepEqual(core.flowOf('video', null, {}).items, []);
+  assert.equal(core.flowOf('video', null, {}).index, -1);
+  assert.equal(core.flowOf('dev', 'Deploy', {}), null);
+  assert.deepEqual(['2026-10-05', '2026-13-01', '2026-2-3', '', null, 20261005, '2024-02-29', '2025-02-29'].map(core.validDay), ['2026-10-05', null, null, null, null, null, '2024-02-29', null]);
+  // Cambiar la categoría a otra sin lista quita el flujo pero conserva lo guardado en la configuración.
+  const asOps = core.buildModel(data, { projects: { '/Users/demo/youtube/ep-12': { category: 'ops', stage: 'Diseño', due: '2026-10-05' } } }, now);
+  assert.equal(asOps.projectMap['/Users/demo/youtube/ep-12'].flow, null);
+});
+
 test('modelo: estado inferido sin registro vivo', () => {
   const f = entryFactory({ sessionId: 'z' });
   const s = ingestAll(core.createSessionState('z'), [f.prompt(T0, 'x'), f.assistant(T0 + 1000, [f.toolUse('Bash', { command: 'sleep 1' })], { id: 'z1' })]);

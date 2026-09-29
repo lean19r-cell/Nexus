@@ -59,6 +59,34 @@ test('cli: usage --json resume el consumo con coste estimado y filtra por proyec
   }
 });
 
+test('cli: tag guarda etapa y fecha objetivo, valida la fecha y permite quitarla', async () => {
+  const { root, claude, home } = await fixture();
+  try {
+    const proj = ['--proyecto', '/Users/demo/youtube/ep-49'];
+    const ok = await nexus(claude, home, ['tag', 'video', '--etapa', 'Guion', '--fecha', '2026-10-05', ...proj]);
+    assert.equal(ok.code, 0, ok.stderr);
+    assert.match(ok.stdout, /etapa Guion · fecha objetivo 2026-10-05/);
+    const file = path.join(home, 'config.json');
+    let cfg = JSON.parse(await fs.readFile(file, 'utf8'));
+    const key = Object.keys(cfg.projects)[0];
+    assert.deepEqual(cfg.projects[key], { category: 'video', stage: 'Guion', due: '2026-10-05' });
+
+    const bad = await nexus(claude, home, ['tag', '--fecha', '2026-02-30', ...proj]);
+    assert.equal(bad.code, 1);
+    assert.match(bad.stderr, /Fecha no válida/);
+    cfg = JSON.parse(await fs.readFile(file, 'utf8'));
+    assert.equal(cfg.projects[key].due, '2026-10-05', 'una fecha inválida no cambia nada');
+
+    const clear = await nexus(claude, home, ['tag', '--fecha', 'ninguna', ...proj]);
+    assert.equal(clear.code, 0, clear.stderr);
+    cfg = JSON.parse(await fs.readFile(file, 'utf8'));
+    assert.equal(cfg.projects[key].due, undefined);
+    assert.equal(cfg.projects[key].stage, 'Guion');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('cli: usage en texto muestra el coste, los modelos y avisa de los que no tienen precio', async () => {
   const { root, claude, home } = await fixture();
   try {

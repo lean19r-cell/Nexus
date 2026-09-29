@@ -65,6 +65,7 @@ Para ver cómo se ve sin tus datos: `node nexus/bin/nexus.mjs demo`.
 |---|---|
 | **Mando** | Qué sesiones trabajan o te esperan ahora, tareas abiertas, lo completado hoy, actividad de 24 h, mapa de 26 semanas y registro en vivo de cada herramienta que usa Claude. |
 | **Proyectos** | Una ficha por carpeta con categoría (desarrollo, vídeo, contenido, investigación, ops), etapa, avance de tareas y actividad. Los worktrees se agrupan con su repositorio. |
+| **Canal** | El pipeline de tus vídeos: una columna por etapa (Idea → Guion → Grabación → Edición → Miniatura → Publicado), con lista de comprobación de la etapa, **fecha objetivo** y qué vídeos tienen a Claude trabajando. Cambia de etapa desde la tarjeta y mira el **calendario** de las próximas cinco semanas, con lo vencido aparte. |
 | **Seguimiento** | Tandas y tareas **juntas**, por estado: *Te esperan · En curso · Pendientes · Terminadas · Con problemas* (tandas interrumpidas o con errores). Filtra por proyecto, por tipo (tandas/tareas) y por periodo para lo terminado, o mira la matriz **Por proyecto** con los contadores de cada estado. |
 | **Tareas** | Tablero *En curso / Pendientes / Bloqueadas / Completadas* de todos los proyectos, o agrupado por proyecto. Las tareas abiertas de sesiones cerradas hace días se marcan como abandonadas y no inflan los contadores. |
 | **Planes** | Cada plan del modo plan con su estado (pendiente, aprobado, rechazado, borrador) y su texto renderizado. |
@@ -73,7 +74,7 @@ Para ver cómo se ve sin tus datos: `node nexus/bin/nexus.mjs demo`.
 | **Consumo** | Tokens y coste **estimado** por día (o semana), proyecto y modelo, con la lectura de caché. Usa los precios de lista de la API, que puedes corregir en Ajustes; un modelo sin precio muestra solo tokens. |
 | **Ajustes** | Categoría, etapa y visibilidad de cada proyecto, precios de los modelos, avisos (en el panel, del sistema, con sonido) y efectos visuales. |
 
-Atajos: `/` busca en todo, `1`–`9` cambian de vista (siguen el orden del menú lateral), `Esc` cierra.
+Atajos: `/` busca en todo, `1`–`9` y `0` cambian de vista (siguen el orden del menú lateral), `Esc` cierra.
 
 ### Avisos con sonido
 
@@ -99,7 +100,9 @@ Las carpetas con nombres como `youtube`, `canal`, `video`, `shorts`, `guion` o `
 - **Desarrollo:** Planificación → Desarrollo → Pruebas → Deploy → Mantenimiento
 - **Contenido:** Idea → Borrador → Revisión → Publicado
 
-Cámbialas desde la ficha del proyecto o pídeselo a Claude: «marca este proyecto como vídeo en etapa Edición».
+Cámbialas desde la ficha del proyecto, desde la vista **Canal** o pídeselo a Claude: «marca este proyecto como vídeo en etapa Edición».
+
+Cada etapa de vídeo trae su lista de comprobación (por ejemplo, en *Edición*: corte base, música y efectos, subtítulos, revisión final). Las marcas y la fecha objetivo se guardan en tu configuración de NEXUS (`~/.claude-nexus/config.json`), no en el proyecto. Desde la terminal: `nexus tag video --etapa Guion --fecha 2026-10-05` (con `--fecha ninguna` se quita).
 
 ## La skill `/nexus`
 
@@ -120,7 +123,7 @@ Por debajo usa el CLI:
 | `nexus tasks [--project X] [--all]` | Tareas abiertas por proyecto |
 | `nexus projects` | Proyectos con categoría, etapa y avance |
 | `nexus usage [--days N] [--todo] [--project X] [--json]` | Consumo de tokens y coste estimado por proyecto, modelo y día (30 días por defecto) |
-| `nexus tag <categoría> [--etapa X] [--nombre Y]` | Clasifica el proyecto de la carpeta actual |
+| `nexus tag <categoría> [--etapa X] [--nombre Y] [--fecha AAAA-MM-DD]` | Clasifica el proyecto de la carpeta actual y fija su etapa y fecha objetivo |
 | `nexus start` / `stop` | Servidor en primer plano / detenerlo |
 | `nexus shortcut [--remove]` | Crea (o quita) el acceso directo del escritorio |
 | `nexus install [--hooks] [--autostart] [--shortcut]` · `uninstall` | Instalar o quitar la skill, los hooks y el acceso directo |

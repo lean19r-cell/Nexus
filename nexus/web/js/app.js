@@ -26,7 +26,8 @@
     sst: 'all', ssort: 'updatedAt', sdir: -1,
     plst: 'all', heatTable: false, actTable: false,
     urange: '30', umetric: 'cost',
-    fview: 'board', fkind: 'all', frange: 'today'
+    fview: 'board', fkind: 'all', frange: 'today',
+    cview: 'pipeline'
   };
 
   function loadPrefs() {
@@ -49,7 +50,7 @@
 
   // ───────────────────────────────────────────────────────────── estado
 
-  var VIEWS_OK = { overview: 1, projects: 1, project: 1, tasks: 1, plans: 1, runs: 1, sessions: 1, session: 1, follow: 1, usage: 1, settings: 1 };
+  var VIEWS_OK = { overview: 1, projects: 1, project: 1, tasks: 1, plans: 1, runs: 1, sessions: 1, session: 1, channel: 1, follow: 1, usage: 1, settings: 1 };
 
   var S = {
     source: null,
@@ -689,6 +690,7 @@
       '<div class="field"><label>Etapa</label><div class="stages">' + stages.map(function (st, i) {
         return '<button type="button" class="stage' + (i < curStage ? ' past' : i === curStage ? ' cur' : '') + '" data-act="stage" data-key="' + esc(key) + '" data-stage="' + esc(st) + '" aria-pressed="' + (i === curStage) + '"><i></i>' + esc(st) + '</button>';
       }).join('') + '</div></div>' +
+      (p.flow ? '<div class="field"><label>Lista de la etapa · fecha objetivo</label>' + flowEditor(p) + '</div>' : '') +
       '<div class="edit-row"><div class="field"><label for="pf-name">Nombre</label><input class="input" id="pf-name" data-cfg="name" data-key="' + esc(key) + '" value="' + esc(cfg.name || '') + '" placeholder="' + esc(C.baseName(key)) + '"></div>' +
       '<div class="field"><label for="pf-cat">Categoría</label>' + catSelect + '</div>' +
       '<div class="field"><label for="pf-alias">Unir con otro proyecto</label><select class="select" id="pf-alias" data-cfg="alias" data-key="' + esc(key) + '"><option value="">No unir</option>' +
@@ -960,6 +962,137 @@
 
   // ───────────────────────────────────────────────────────────── vista: ajustes
 
+  // ───────────────────────────────────────────────────────────── vista: canal (flujo de vídeos)
+
+  var WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+
+  function dayNoon(key) {
+    var p = key.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2], 12).getTime();
+  }
+
+  // Fecha objetivo de un vídeo respecto a hoy: { days, published, label, cls } (cls: late | soon | ok | '').
+  function dueInfo(p, now) {
+    if (!p.due) return null;
+    var days = Math.round((dayNoon(p.due) - (C.startOfDay(now) + 12 * 3600000)) / 86400000);
+    var stages = C.STAGES.video;
+    var published = p.stage === stages[stages.length - 1];
+    var rel = days === 0 ? 'hoy' : days === 1 ? 'mañana' : days === -1 ? 'ayer' : days > 0 ? 'en ' + days + ' días' : 'hace ' + (-days) + ' días';
+    return { days: days, published: published, label: fmtDay(dayNoon(p.due)) + ' · ' + rel, cls: published ? 'ok' : days < 0 ? 'late' : days <= 2 ? 'soon' : '' };
+  }
+
+  function dueBadge(p, now) {
+    var d = dueInfo(p, now);
+    return d ? '<span class="due ' + d.cls + '" title="Fecha objetivo">' + (d.published ? '✓ ' : d.days < 0 ? '⚠ ' : '') + esc(d.label) + '</span>' : '';
+  }
+
+  // Lista de comprobación de la etapa actual, fecha objetivo y botones para cambiar de etapa.
+  function flowEditor(p) {
+    var f = p.flow;
+    if (!f) return '';
+    var stages = C.STAGES[p.category];
+    var key = esc(p.key);
+    var idx = f.index;
+    var cur = idx >= 0 ? f.stages[idx] : null;
+    var items = f.items.map(function (it) {
+      return '<label class="chk' + (it.done ? ' done' : '') + '"><input type="checkbox" id="chk-' + hashStr(p.key + it.id) + '" data-cfg="check" data-key="' + key + '" data-item="' + esc(it.id) + '"' + (it.done ? ' checked' : '') + '><span>' + esc(it.label) + '</span></label>';
+    }).join('');
+    var ready = f.items.length > 0 && f.items.every(function (i) { return i.done; });
+    var prev = idx > 0 ? '<button class="btn small ghost" type="button" data-act="stage-step" data-key="' + key + '" data-dir="-1">◂ ' + esc(stages[idx - 1]) + '</button>' : '';
+    var next = idx < stages.length - 1 ? '<button class="btn small' + (ready ? ' primary' : '') + '" type="button" data-act="stage-step" data-key="' + key + '" data-dir="1">' + (idx < 0 ? 'Empezar: ' : '') + esc(stages[idx + 1]) + ' ▸</button>' : '';
+    return '<div class="flow">' +
+      (cur ? '<div class="flow-h"><b>' + esc(stages[idx]) + '</b><span class="dim mono">' + cur.done + '/' + cur.total + '</span></div><div class="chks">' + items + '</div>'
+        : '<p class="dim" style="margin:0;font-size:13px">Elige una etapa para ver su lista de comprobación.</p>') +
+      '<div class="flow-f"><label class="due-f">Fecha objetivo <input class="input" type="date" id="due-' + hashStr(p.key) + '" data-cfg="due" data-key="' + key + '" value="' + esc(p.due || '') + '"></label>' +
+      '<span class="sp"></span>' + prev + next + '</div></div>';
+  }
+
+  function videoCard(p, now) {
+    var f = p.flow;
+    var cur = f.index >= 0 ? f.stages[f.index] : null;
+    var open = !!S.expanded['vid-' + p.key];
+    var live = p.status === 'working' || p.status === 'waiting';
+    return '<article class="tcard vcard' + (open ? ' open' : '') + '" data-key="vc-' + esc(p.key) + '">' +
+      '<div class="vtop">' + (live ? orb(p.status) : '') + '<a class="subj" href="' + hrefProject(p.key) + '">' + esc(p.name) + '</a></div>' +
+      (p.current ? '<div class="af">▸ ' + esc(C.trunc(p.current.x, 100)) + '</div>' : '') +
+      (cur && cur.total ? progress(cur.done, cur.total) : '') +
+      '<div class="foot">' + dueBadge(p, now) + '<button class="toggle t" type="button" data-act="run" data-id="vid-' + esc(p.key) + '" aria-expanded="' + open + '">' + (open ? 'Ocultar' : 'Lista') + '</button></div>' +
+      (open ? flowEditor(p) : '') + '</article>';
+  }
+
+  // Cinco semanas desde el lunes de esta semana con las fechas objetivo; lo vencido y lo lejano van en listas aparte.
+  function channelCalendar(videos, now) {
+    var noon = C.startOfDay(now) + 12 * 3600000;
+    var mon = noon - ((new Date(noon).getDay() + 6) % 7) * 86400000;
+    var todayKey = C.dayKey(now);
+    var lastKey = C.dayKey(mon + 34 * 86400000);
+    var open = videos.filter(function (p) { var d = dueInfo(p, now); return d && !d.published; });
+    var byDay = {};
+    videos.forEach(function (p) { if (p.due) (byDay[p.due] = byDay[p.due] || []).push(p); });
+    var cells = '';
+    for (var i = 0; i < 35; i++) {
+      var t = mon + i * 86400000;
+      var d = new Date(t);
+      var key = C.dayKey(t);
+      cells += '<div class="cal-d' + (key === todayKey ? ' today' : key < todayKey ? ' past' : '') + '"><span class="n">' + d.getDate() + (d.getDate() === 1 || i === 0 ? ' <small>' + MONTHS[d.getMonth()] + '</small>' : '') + '</span>' +
+        (byDay[key] || []).map(function (p) {
+          return '<a class="cal-v ' + dueInfo(p, now).cls + '" href="' + hrefProject(p.key) + '" title="' + esc(p.name + ' · ' + (p.stage || 'sin etapa')) + '">' + esc(p.name) + '</a>';
+        }).join('') + '</div>';
+    }
+    var line = function (p) {
+      return '<a class="row" href="' + hrefProject(p.key) + '" data-key="cv-' + esc(p.key) + '"><div class="grow"><div class="line1">' + esc(p.name) + '</div><div class="line2">' + esc(p.stage || 'Sin etapa') + '</div></div>' + dueBadge(p, now) + '</a>';
+    };
+    var late = open.filter(function (p) { return p.due < todayKey; }).sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    var later = open.filter(function (p) { return p.due > lastKey; }).sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    return (late.length ? '<section class="panel"><div class="panel-h"><h2>Vencidos</h2><div class="meta">' + late.length + '</div></div><div class="panel-b flush rows">' + late.map(line).join('') + '</div></section>' : '') +
+      '<section class="panel"><div class="panel-h"><h2>Próximas cinco semanas</h2><div class="meta">' + plural(videos.filter(function (p) { return p.due && p.due >= C.dayKey(mon) && p.due <= lastKey; }).length, 'fecha', 'fechas') + '</div></div><div class="panel-b">' +
+      '<div class="cal" role="grid" aria-label="Fechas objetivo de los vídeos">' + WEEKDAYS.map(function (w) { return '<div class="cal-h" role="columnheader">' + w + '</div>'; }).join('') + cells + '</div>' +
+      (videos.some(function (p) { return p.due; }) ? '' : '<p class="dim" style="margin:12px 0 0;font-size:13px">Ninguna fecha todavía: ponla en la lista de un vídeo (vista Pipeline → Lista) o en su ficha.</p>') + '</div></section>' +
+      (later.length ? '<section class="panel"><div class="panel-h"><h2>Más adelante</h2><div class="meta">' + later.length + '</div></div><div class="panel-b flush rows">' + later.map(line).join('') + '</div></section>' : '');
+  }
+
+  function vChannel(m) {
+    var q = (S.t.q.channel || '').toLowerCase().trim();
+    var all = m.projects.filter(function (p) { return p.category === 'video' && !p.hidden && p.flow; });
+    var videos = all.filter(function (p) { return !q || (p.name + ' ' + (p.notes || '')).toLowerCase().indexOf(q) >= 0; });
+    var stages = C.STAGES.video;
+    var head = function (lede) { return pageHead('Ca<span class="accent">nal</span>', lede); };
+    if (!all.length) {
+      return '<div class="page power-on">' + head('Pipeline de tus vídeos: etapa, lista de comprobación y fecha objetivo de cada uno.') +
+        '<div class="panel">' + empty('Todavía no hay proyectos de vídeo. NEXUS los detecta por el nombre de la carpeta (youtube, canal, video, shorts, guion, miniatura…) o si Claude usa ffmpeg, whisper o yt-dlp; también puedes cambiar la categoría de un proyecto a «Video / Canal» en su ficha.') + '</div></div>';
+    }
+    var now = m.now;
+    var todayKey = C.dayKey(now);
+    var byDue = function (a, b) { return (a.due ? 0 : 1) - (b.due ? 0 : 1) || (a.due < b.due ? -1 : a.due > b.due ? 1 : 0) || b.lastActivity - a.lastActivity; };
+    var late = all.filter(function (p) { var d = dueInfo(p, now); return d && !d.published && d.days < 0; }).length;
+    var next = all.filter(function (p) { var d = dueInfo(p, now); return d && !d.published && d.days >= 0; }).sort(byDue)[0];
+    var working = all.filter(function (p) { return p.status === 'working' || p.status === 'waiting'; }).length;
+    var lede = '<b>' + all.length + '</b> vídeos · <b>' + working + '</b> con Claude trabajando' +
+      (late ? ' · <b style="color:var(--red)">' + late + '</b> ' + (late === 1 ? 'vencido' : 'vencidos') : '') +
+      (next ? ' · próxima entrega: <b>' + esc(next.name) + '</b> (' + esc(dueInfo(next, now).label) + ')' : '');
+    var toolbar = searchBox('channel', 'Buscar un vídeo') + seg('cview', [['pipeline', 'Pipeline'], ['calendar', 'Calendario']], S.p.cview, 'Vista');
+    var body;
+    if (S.p.cview === 'calendar') {
+      body = '<div class="stack">' + channelCalendar(videos, now) + '</div>';
+    } else {
+      var cols = stages.map(function (name) { return { name: name, list: [] }; });
+      var noStage = { name: 'Sin etapa', list: [] };
+      videos.forEach(function (p) {
+        var i = stages.indexOf(p.stage);
+        (i >= 0 ? cols[i] : noStage).list.push(p);
+      });
+      if (noStage.list.length) cols.unshift(noStage);
+      body = '<div class="kanban kv" style="--n:' + cols.length + '">' + cols.map(function (c, i) {
+        var list = c.list.slice().sort(byDue);
+        var lim = limit('vcol-' + c.name, 8);
+        var cls = c.name === 'Sin etapa' ? 'pending' : c.name === stages[stages.length - 1] ? 'completed' : '';
+        return '<section class="panel col ' + cls + '"><div class="panel-h"><h2>' + esc(c.name) + '</h2><div class="meta">' + list.length + '</div></div>' +
+          '<div class="tcards">' + (list.length ? list.slice(0, lim).map(function (p) { return videoCard(p, now); }).join('') + moreBtn('vcol-' + c.name, lim, list.length, 8) : '<div class="empty" style="padding:14px 6px">Nada aquí.</div>') + '</div></section>';
+      }).join('') + '</div>';
+    }
+    return '<div class="page power-on">' + head(lede) + '<div class="toolbar">' + toolbar + '</div>' + (videos.length ? body : '<div class="panel">' + empty('Ningún vídeo coincide con la búsqueda.') + '</div>') + '</div>';
+  }
+
   // ───────────────────────────────────────────────────────────── vista: seguimiento
 
   // Tandas y tareas juntas, por estado: te esperan · en curso · pendientes · terminadas · con problemas.
@@ -1072,11 +1205,6 @@
   var modelName = C.modelName;
 
   function fmtPrice(n) { return String(+(+n).toFixed(4)).replace('.', ','); }
-
-  function dayNoon(key) {
-    var p = key.split('-');
-    return new Date(+p[0], +p[1] - 1, +p[2], 12).getTime();
-  }
 
   // Barras del consumo por día (o por semana cuando el periodo pasa de 120 días).
   function usageBars(agg, range, now, metric) {
@@ -1242,7 +1370,7 @@
       '<section class="panel"><div class="panel-h"><h2>Integración con Claude Code</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:12px;font-size:14px">' +
       '<p style="margin:0" class="steel">Instala la skill <span class="mono">/nexus</span> para abrir el panel o preguntarle a Claude por el estado de todos tus proyectos, y los hooks opcionales para avisos instantáneos:</p>' +
       '<div class="copy"><code>' + esc(install) + '</code><button class="btn small" type="button" data-act="copy" data-copy="' + esc(install) + '">Copiar</button></div>' +
-      '<p style="margin:0" class="dim">Atajos: <span class="mono">/</span> buscar · <span class="mono">1–' + $$('.rail .nav').length + '</span> secciones · <span class="mono">Esc</span> cerrar.</p></div></section>' +
+      '<p style="margin:0" class="dim">Atajos: <span class="mono">/</span> buscar · <span class="mono">' + ($$('.rail .nav').length > 9 ? '1–9 y 0' : '1–' + $$('.rail .nav').length) + '</span> secciones · <span class="mono">Esc</span> cerrar.</p></div></section>' +
       '</div></div></div>';
   }
 
@@ -1250,7 +1378,7 @@
     return '<div class="page power-on">' + pageHead(esc(title), 'Puede que se haya borrado o que el enlace sea de otra fuente de datos.') + '<div><a class="btn" href="' + back + '">' + esc(label) + '</a></div></div>';
   }
 
-  var VIEWS = { overview: vOverview, projects: vProjects, project: vProject, tasks: vTasks, plans: vPlans, runs: vRuns, sessions: vSessions, session: vSession, follow: vFollow, usage: vUsage, settings: vSettings };
+  var VIEWS = { overview: vOverview, projects: vProjects, project: vProject, tasks: vTasks, plans: vPlans, runs: vRuns, sessions: vSessions, session: vSession, channel: vChannel, follow: vFollow, usage: vUsage, settings: vSettings };
 
   // ───────────────────────────────────────────────────────────── morph del DOM
 
@@ -1630,7 +1758,10 @@
 
   function setProjectCfg(key, patch) {
     var cur = Object.assign({}, S.config.projects[key] || {}, patch);
-    Object.keys(cur).forEach(function (k) { if (cur[k] === '' || cur[k] === null || cur[k] === false || cur[k] === undefined) delete cur[k]; });
+    Object.keys(cur).forEach(function (k) {
+      var empty = typeof cur[k] === 'object' && cur[k] !== null && !Object.keys(cur[k]).length;
+      if (cur[k] === '' || cur[k] === null || cur[k] === false || cur[k] === undefined || empty) delete cur[k];
+    });
     if (Object.keys(cur).length) S.config.projects[key] = cur;
     else delete S.config.projects[key];
     saveConfig();
@@ -1738,6 +1869,12 @@
         saveConfig();
         scheduleModel(true);
         break;
+      case 'stage-step':
+        var sp = S.model.projectMap[key];
+        var sl = sp ? C.STAGES[sp.category] || C.STAGES.other : null;
+        var ni = sl ? sl.indexOf(sp.stage) + (+el.getAttribute('data-dir') || 1) : -1;
+        if (sl && ni >= 0 && ni < sl.length) setProjectCfg(key, { stage: sl[ni] });
+        break;
       case 'follow-proj':
         S.t.proj.follow = key;
         S.p.fview = 'board';
@@ -1786,6 +1923,7 @@
     if (k === 'projects') return 60;
     if (k === 'uproj') return 15;
     if (k.indexOf('fcol-') === 0) return 30;
+    if (k.indexOf('vcol-') === 0) return 8;
     if (k.indexOf('col-') === 0) return 40;
     if (k === 'sd-runs') return 40;
     if (k === 'pd-tasks') return 30;
@@ -1832,6 +1970,13 @@
     var key = el.getAttribute('data-key');
     var field = el.getAttribute('data-cfg');
     if (field === 'price') { setPrice(el); return; }
+    if (field === 'check') {
+      var checks = Object.assign({}, (S.config.projects[key] || {}).checks || {});
+      if (el.checked) checks[el.getAttribute('data-item')] = true;
+      else delete checks[el.getAttribute('data-item')];
+      setProjectCfg(key, { checks: checks });
+      return;
+    }
     var val = el.type === 'checkbox' ? el.checked : el.value.trim();
     if (field === 'alias') {
       if (val) { S.config.aliases[key] = val; saveConfig(); scheduleModel(true); location.hash = hrefProject(val); }
@@ -1894,7 +2039,7 @@
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
     // Los números siguen el orden del menú lateral, así que añadir una sección no obliga a renumerar.
-    var link = /^[1-9]$/.test(e.key) ? $$('.rail .nav')[+e.key - 1] : null;
+    var link = /^[0-9]$/.test(e.key) ? $$('.rail .nav')[(+e.key + 9) % 10] : null; // 1–9 y 0 para la décima
     if (link) location.hash = link.getAttribute('href');
   });
 
@@ -2121,6 +2266,7 @@
     S.source = 'demo';
     S.config = loadLocalConfig();
     var demo = DEMO.create(Date.now());
+    if (!Object.keys(S.config.projects).length) S.config = C.normalizeConfig(demo.config); // los cambios del usuario en la demo mandan
     applySnapshot(demo.snapshot);
     hideConnect();
     S.timer = setInterval(function () {

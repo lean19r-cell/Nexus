@@ -620,7 +620,21 @@
       return any ? delta : null;
     }
 
-    return { snapshot: snapshot, tick: tick };
+    // Etapas, fechas objetivo y listas de comprobación de ejemplo (la app las usa si aún no hay configuración de demo).
+    var config = { version: 1, projects: {}, aliases: {}, ui: {}, prices: {} };
+    PROJECTS.forEach(function (p) { if (p.stage) config.projects[p.path] = { stage: p.stage }; });
+    function flow(name, stage, dueDays, checks) {
+      var key = HOME + '/youtube/' + name;
+      var cur = { stage: stage, checks: {} };
+      if (dueDays !== null) cur.due = C.dayKey(now + dueDays * DAY);
+      checks.forEach(function (id) { cur.checks[id] = true; });
+      config.projects[key] = cur;
+    }
+    flow('ep-47-ia-local', 'Publicado', -3, ['idea-tema', 'idea-titulo', 'idea-ref', 'guion-gancho', 'guion-escrito', 'guion-revisado', 'grab-material', 'grab-tomas', 'grab-audio', 'edic-corte', 'edic-extras', 'edic-subs', 'edic-final', 'mini-diseno', 'mini-texto', 'mini-tags', 'pub-subido', 'pub-programado']);
+    flow('ep-48-agentes-ia', 'Guion', 6, ['idea-tema', 'idea-titulo', 'idea-ref', 'guion-gancho']);
+    flow('miniaturas-lab', 'Miniatura', -2, ['mini-diseno']);
+
+    return { snapshot: snapshot, tick: tick, config: config };
   }
 
   root.NexusDemo = { create: create, PROJECTS: PROJECTS };

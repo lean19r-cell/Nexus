@@ -47,6 +47,7 @@ Organización
                        dev | video | contenido | investigacion | ops | otros
     --etapa <nombre>   Etapa (p. ej. Guion, Edición, Publicado, Desarrollo, Deploy)
     --nombre <texto>   Nombre visible en el panel
+    --fecha <AAAA-MM-DD>  Fecha objetivo (p. ej. de publicación de un vídeo); «ninguna» la quita
     --proyecto <ruta>  Otra carpeta de proyecto en lugar de la actual
 
 Instalación
@@ -80,7 +81,7 @@ function parse(argv) {
   return out;
 }
 
-const VALUE_FLAGS = new Set(['port', 'claude-dir', 'project', 'proyecto', 'etapa', 'stage', 'nombre', 'name', 'dir', 'home', 'days']);
+const VALUE_FLAGS = new Set(['port', 'claude-dir', 'project', 'proyecto', 'etapa', 'stage', 'nombre', 'name', 'dir', 'home', 'days', 'fecha', 'due']);
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -474,16 +475,26 @@ async function cmdTag(flags, pos) {
   if (stage) cur.stage = String(stage);
   const name = flags.nombre || flags.name;
   if (name) cur.name = String(name);
-  if (!category && !stage && !name) {
+  const due = flags.fecha || flags.due;
+  if (due) {
+    if (/^(ninguna|no|-)$/i.test(String(due))) delete cur.due;
+    else if (core.validDay(String(due))) cur.due = String(due);
+    else {
+      console.error(`Fecha no válida: «${due}». Usa AAAA-MM-DD (por ejemplo 2026-10-05) o «ninguna» para quitarla.`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (!category && !stage && !name && !due) {
     console.log(`Proyecto: ${key}`);
     console.log(`Actual: ${JSON.stringify(cur)}`);
-    console.log('Indica una categoría, --etapa o --nombre para cambiarlo.');
+    console.log('Indica una categoría, --etapa, --nombre o --fecha para cambiarlo.');
     return;
   }
   cfg.projects[key] = cur;
   await writeConfig(flags, running, cfg);
   const catLabel = core.CATEGORIES.find((c) => c.id === cur.category);
-  console.log(`${mint('✓')} ${bold(cur.name || core.baseName(key))} → ${catLabel ? catLabel.label : 'categoría automática'}${cur.stage ? ' · etapa ' + cur.stage : ''}`);
+  console.log(`${mint('✓')} ${bold(cur.name || core.baseName(key))} → ${catLabel ? catLabel.label : 'categoría automática'}${cur.stage ? ' · etapa ' + cur.stage : ''}${cur.due ? ' · fecha objetivo ' + cur.due : ''}`);
   console.log(dim(`  ${key}`));
 }
 

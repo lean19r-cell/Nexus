@@ -1202,6 +1202,58 @@
     other: ['Backlog', 'En curso', 'Revisión', 'Hecho']
   };
 
+  // Lista de comprobación de cada etapa (solo vídeo por ahora): [id estable, texto]. El estado guardado por
+  // proyecto es { id: true } en config.projects[clave].checks; los ids son únicos entre etapas y no se
+  // reutilizan, así que se puede reescribir el texto sin perder lo marcado.
+  var CHECKLISTS = {
+    video: {
+      'Idea': [['idea-tema', 'Tema elegido'], ['idea-titulo', 'Título provisional'], ['idea-ref', 'Referencias y competencia vistas']],
+      'Guion': [['guion-gancho', 'Gancho y estructura'], ['guion-escrito', 'Guion escrito'], ['guion-revisado', 'Guion revisado']],
+      'Grabación': [['grab-material', 'Material y escenario listos'], ['grab-tomas', 'Tomas grabadas'], ['grab-audio', 'Audio comprobado']],
+      'Edición': [['edic-corte', 'Corte base'], ['edic-extras', 'Música, efectos y rótulos'], ['edic-subs', 'Subtítulos'], ['edic-final', 'Revisión final']],
+      'Miniatura': [['mini-diseno', 'Miniatura diseñada'], ['mini-texto', 'Título y descripción'], ['mini-tags', 'Etiquetas y capítulos']],
+      'Publicado': [['pub-subido', 'Subido'], ['pub-programado', 'Publicado o programado'], ['pub-difusion', 'Compartido en redes']]
+    }
+  };
+
+  /** 'AAAA-MM-DD' de un día real del calendario, o null. */
+  function validDay(v) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof v === 'string' ? v : '');
+    if (!m) return null;
+    return dayKey(new Date(+m[1], +m[2] - 1, +m[3], 12).getTime()) === v ? v : null;
+  }
+
+  function cleanChecks(src) {
+    var out = {};
+    if (src && typeof src === 'object') {
+      for (var id in src) if (has(src, id) && src[id] === true && id.length <= 40) out[id] = true;
+    }
+    return out;
+  }
+
+  /**
+   * Avance del flujo de un proyecto de una categoría con lista de comprobación (null si no tiene):
+   * { stages: [{ name, done, total }], index (etapa actual, -1 si no hay), items: [{ id, label, done }] de la
+   * etapa actual, done y total de todo el flujo }.
+   */
+  function flowOf(category, stage, checks) {
+    var tpl = CHECKLISTS[category];
+    if (!tpl) return null;
+    checks = checks || {};
+    var names = STAGES[category];
+    var done = 0, total = 0;
+    var stages = names.map(function (name) {
+      var items = tpl[name] || [];
+      var d = items.filter(function (it) { return has(checks, it[0]); }).length;
+      done += d;
+      total += items.length;
+      return { name: name, done: d, total: items.length };
+    });
+    var idx = names.indexOf(stage);
+    var items = idx < 0 ? [] : (tpl[names[idx]] || []).map(function (it) { return { id: it[0], label: it[1], done: has(checks, it[0]) }; });
+    return { stages: stages, index: idx, items: items, done: done, total: total };
+  }
+
   function defaultConfig() {
     return { version: 1, projects: {}, aliases: {}, ui: {}, prices: {} };
   }
@@ -1481,6 +1533,9 @@
           name: pc.name || null,
           category: CATEGORY_IDS[pc.category] ? pc.category : null,
           stage: pc.stage || null,
+          due: validDay(pc.due),
+          checks: cleanChecks(pc.checks),
+          flow: null,
           notes: pc.notes || '',
           pinned: !!pc.pinned,
           hidden: !!pc.hidden,
@@ -1837,7 +1892,8 @@
       }
       p.autoCategory = detectCategory(p.key, p.signals);
       if (!p.category) p.category = p.autoCategory;
-      p.progress = p.tasks.total ? p.tasks.completed / p.tasks.total : null;
+      p.flow = flowOf(p.category, p.stage, p.checks);
+      p.progress =p.tasks.total ? p.tasks.completed / p.tasks.total : null;
       var cur = null;
       p.sessions.forEach(function (id) {
         var sv3 = sessionMap[id];
@@ -2113,6 +2169,9 @@
     HOT_WINDOW: HOT_WINDOW,
     CATEGORIES: CATEGORIES,
     STAGES: STAGES,
+    CHECKLISTS: CHECKLISTS,
+    validDay: validDay,
+    flowOf: flowOf,
     // utilidades
     toMs: toMs, trunc: trunc, normPath: normPath, baseName: baseName, shortPath: shortPath,
     projectKeyFromCwd: projectKeyFromCwd, originLabel: originLabel, describeTool: describeTool, waitPhrase: waitPhrase,

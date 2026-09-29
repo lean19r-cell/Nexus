@@ -23,15 +23,16 @@ privado (el servidor solo escucha en `127.0.0.1:2077`).
 - Versión `1.0.0` (`web/js/core.js` → `VERSION`; `package.json`).
 - `main` está en `7a0bbd4` (PR #2 fusionado). El trabajo nuevo va en la rama
   `claude/lucid-maxwell-jin1x7` (sin PR abierto todavía; el usuario no lo ha pedido).
-- **30 pruebas, todas en verde** (`cd nexus && npm test`, ~1 s).
+- **32 pruebas, todas en verde** (`cd nexus && npm test`, ~1 s).
 - **Sin dependencias** (solo Node ≥ 18 y el navegador). Mantener así.
-- Funcionalidad ya hecha: 9 vistas (Mando, Proyectos, Seguimiento, Tareas, Planes, Tandas,
-  Sesiones, Consumo, Ajustes), servidor con escaneo incremental + caché + SSE, hooks opcionales, CLI
+- Funcionalidad ya hecha: 10 vistas (Mando, Proyectos, Canal, Seguimiento, Tareas, Planes,
+  Tandas, Sesiones, Consumo, Ajustes), servidor con escaneo incremental + caché + SSE, hooks opcionales, CLI
   completo, skill `/nexus`, modo navegador sin Node (File System Access API), demo con datos
   vivos, build a HTML único, acceso directo de escritorio (Mac/Windows/Linux), iconos, vista móvil.
 - **Añadido el 2026-09-29:** vista y comando **Consumo** (tokens y coste estimado por día,
   proyecto y modelo, precios editables en Ajustes), **avisos con sonido** al terminar una
-  tanda o una tarea y la vista **Seguimiento** que junta tandas y tareas por estado (ver bitácora).
+  tanda o una tarea, la vista **Seguimiento** que junta tandas y tareas por estado y la vista
+  **Canal** con el flujo de vídeos (ver bitácora).
 
 ## 3. Mapa del código (`nexus/`)
 
@@ -154,8 +155,14 @@ El usuario eligió el 2026-09-29 (por este orden de riesgo):
    tablero de 5 columnas (te esperan · en curso · pendientes · terminadas · con problemas) y matriz
    por proyecto; reutiliza `runStatus` y las clases `.kanban/.tcard`. Petición del usuario a
    mitad de sesión. Solo tiene lectura: no hay CLI propio (`nexus status`/`tasks` cubren lo abierto).
-3. ⏳ **Flujo de vídeos del canal** — checklist por etapa, fecha objetivo y pipeline; requiere
-   guardar estado nuevo por proyecto vídeo en `config.projects[...]`.
+3. ✅ **Flujo de vídeos del canal** — hecho: vista `#/channel` (`vChannel` en `app.js`) con
+   pipeline por etapas, lista de comprobación por etapa, fecha objetivo y calendario de cinco
+   semanas. El estado vive en `config.projects[clave]` (`stage`, `due` 'AAAA-MM-DD', `checks`
+   `{id: true}`); las plantillas están en `CHECKLISTS` (`core.js`, solo vídeo) y `flowOf` calcula el
+   avance que `buildModel` deja en `project.flow`. Los ids de las listas son estables: se puede
+   reescribir el texto sin perder lo marcado, pero **no reutilices un id para otra cosa**.
+   `nexus tag --fecha` fija la fecha desde la terminal. Para dar lista a otra categoría basta con
+   añadirla a `CHECKLISTS` (la vista Canal hoy solo lista proyectos de vídeo).
 4. ✅ **Avisos con sonido** al terminar tandas y tareas — hecho.
 5. ❌ **Sesiones en la nube (claude.ai/code)** — **descartado por el usuario** ("déjalo").
    No investigar salvo que lo pida de nuevo.
@@ -180,4 +187,9 @@ Formato: fecha · quién/qué herramienta · qué se hizo · qué queda.
   precio, avisos reales de la demo) y con datos reales de esta sesión (`nexus usage` → Sonnet
   5.5, 15,2M tokens, ≈$4,86). El usuario descartó las sesiones en la nube. (d) **Seguimiento**
   unificado de tandas y tareas (vista `#/follow`); el menú lateral ya tiene 9 secciones (la
-  etiqueta larga lleva la clase `.nav.long`). Pendiente: flujo de vídeos del canal.
+  etiqueta larga lleva la clase `.nav.long`). (e) **Canal**: flujo de vídeos (ver §8.3); la demo
+  siembra etapas, fechas y marcas (`demo.config`). Con Canal el menú tiene 10 secciones: los
+  atajos son 1–9 y `0`. Verificado con Playwright de extremo a extremo (marcar, fecha, cambiar de
+  etapa, ficha del proyecto) y con pruebas de modelo y CLI (32 en verde). Al escribir las pruebas
+  del CLI apareció un fallo real: `--fecha` no estaba en `VALUE_FLAGS` del parser.
+  **Pendiente:** nada de la lista del usuario; las ideas nuevas irán aquí.
