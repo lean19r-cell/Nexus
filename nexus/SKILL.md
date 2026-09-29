@@ -5,7 +5,7 @@ description: NEXUS, el centro de mando para seguir todo lo que Claude Code hace 
 
 # NEXUS · centro de mando de Claude Code
 
-NEXUS lee en local lo que Claude Code ya guarda en `~/.claude` (transcripciones, tareas, planes y el registro de sesiones vivas) y lo muestra en un panel web en `http://127.0.0.1:2077`. No envía nada fuera del ordenador y no gasta tokens: no hace falta "reportar" nada, basta con leer.
+NEXUS lee en local lo que Claude Code ya guarda en `~/.claude` (transcripciones, tareas, planes y el registro de sesiones vivas) y lo muestra en un panel web en `http://127.0.0.1:2077`. No envía tus datos fuera del ordenador (solo consulta GitHub para buscar actualizaciones) y no gasta tokens: no hace falta "reportar" nada, basta con leer.
 
 Todo se maneja con el CLI que acompaña a esta skill. Su ruta es `bin/nexus.mjs` dentro del directorio base de esta skill (el que aparece como "Base directory for this skill"). En los ejemplos, `NEXUS` significa `node "<directorio base>/bin/nexus.mjs"`. Requiere Node 18 o superior.
 
@@ -27,6 +27,8 @@ Todo se maneja con el CLI que acompaña a esta skill. Su ruta es `bin/nexus.mjs`
 | Quitar el acceso directo | `NEXUS shortcut --remove` |
 | Ver la demo | `NEXUS demo` |
 | Parar el servidor | `NEXUS stop` |
+| «¿Hay una versión nueva de NEXUS?», actualizarlo | `NEXUS update --check` para mirar y `NEXUS update --restart` para instalar y reiniciar el servidor (sin git). Avisa después de reiniciar Claude Code o Claude Desktop para que cargue la skill nueva. También hay un botón en Ajustes → Actualizaciones del panel |
+| Reiniciar el servidor de NEXUS | `NEXUS restart` |
 | Problemas o dudas de instalación | `NEXUS doctor` |
 
 Para procesar los datos tú mismo (por ejemplo, para planificar el día), usa `--json` en `status`, `tasks` o `projects`.

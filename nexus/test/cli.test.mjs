@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -97,6 +98,21 @@ test('cli: usage en texto muestra el coste, los modelos y avisa de los que no ti
     assert.match(r.stdout, /Opus 5\.5\s+1,1M\s+\$6,00\s+\$4 \/ \$20 por millón/);
     assert.match(r.stdout, /modelo-inventado-1\s+200\s+—\s+sin precio/);
     assert.match(r.stdout, /\* 200 tokens de modelos sin precio/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+// Desde un clon de git no se actualiza por la red: se pide usar «git pull». (Si alguien ejecuta las pruebas desde una
+// descarga sin .git, este caso no aplica y se omite para no salir a internet.)
+const inGitCheckout = fsSync.existsSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.git'));
+test('cli: update no toca un clon de git y explica qué hacer', { skip: !inGitCheckout && 'no es un clon de git' }, async () => {
+  const { root, claude, home } = await fixture();
+  try {
+    const r = await nexus(claude, home, ['update', '--check']);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /git pull/);
+    assert.doesNotMatch(r.stdout, /Consultando GitHub/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

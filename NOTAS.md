@@ -21,9 +21,10 @@ privado (el servidor solo escucha en `127.0.0.1:2077`).
 ## 2. Estado actual (2026-09-29)
 
 - Versión `1.0.0` (`web/js/core.js` → `VERSION`; `package.json`).
-- `main` está en `7a0bbd4` (PR #2 fusionado). El trabajo nuevo va en la rama
-  `claude/lucid-maxwell-jin1x7` (sin PR abierto todavía; el usuario no lo ha pedido).
-- **32 pruebas, todas en verde** (`cd nexus && npm test`, ~1 s).
+- `main` incluye ya todo lo de las bitácoras de abajo (PR #2 y #3 fusionados). Cada tanda nueva
+  arranca desde el `main` actual en la rama de trabajo que indique la sesión; no se abre un PR
+  salvo que el usuario lo pida.
+- **47 pruebas, todas en verde** (`cd nexus && npm test`, ~2 s).
 - **Sin dependencias** (solo Node ≥ 18 y el navegador). Mantener así.
 - Funcionalidad ya hecha: 10 vistas (Mando, Proyectos, Canal, Seguimiento, Tareas, Planes,
   Tandas, Sesiones, Consumo, Ajustes), servidor con escaneo incremental + caché + SSE, hooks opcionales, CLI
@@ -49,6 +50,7 @@ privado (el servidor solo escucha en `127.0.0.1:2077`).
 | `lib/node-fs.mjs` | Adaptador de sistema de archivos de Node para el `Collector`; resuelve `~/.claude` (respeta `CLAUDE_CONFIG_DIR`) y `NEXUS_HOME`. |
 | `lib/install.mjs` | Instala/desinstala la skill y los hooks (`~/.claude/settings.json`, con copia de seguridad). |
 | `lib/shortcut.mjs` | Acceso directo de escritorio por plataforma. |
+| `lib/update.mjs` | **Actualización desde GitHub sin git**: `fetchLatest`, `checkForUpdate`, `applyUpdate` y el orquestador `createUpdater` (estado, comprobación periódica, instalación). Ver decisión 12. |
 | `tools/build-standalone.mjs` | Genera `dist/nexus.html` (todo en línea). `dist/` está en `.gitignore`. |
 | `tools/build-icons.mjs` | Regenera `.icns/.ico/.png` desde `assets/icon.svg`. |
 | `test/*.test.mjs` | `node --test`. `helpers.mjs` fabrica transcripciones sintéticas con la forma real de Claude Code 2.1.x y un FS en memoria. `cli.test.mjs` ejecuta el CLI real contra carpetas temporales. |
@@ -64,7 +66,10 @@ Los **avisos** viven en `web/js/app.js` (`transitions`, `alertUser`, `playSound`
 ### API del servidor (`127.0.0.1:2077`)
 
 `GET /api/health` · `GET /api/snapshot` · `GET /api/model` · `GET /api/stream` (SSE) ·
-`GET /api/config` · `POST /api/config` · `POST /api/hook` · `POST /api/rescan`.
+`GET /api/config` · `POST /api/config` · `POST /api/hook` · `POST /api/rescan` ·
+`GET /api/update` · `POST /api/update/check` · `POST /api/update/install` · `POST /api/restart`.
+Los `POST` exigen `Content-Type: application/json` y origen propio. El SSE emite además `update`
+(estado del actualizador) y su `hello` lleva `boot`: al cambiar, el panel se recarga solo.
 Todo lo demás (GET) sirve estáticos desde `web/`.
 
 ### Rutas que lee de `~/.claude`
@@ -108,6 +113,26 @@ Todo lo demás (GET) sirve estáticos desde `web/`.
 11. **Avisos:** un mismo repaso puede terminar varias cosas; hasta 3 se avisan por separado y a
     partir de ahí en resumen, y suena un único tono (prioridad: te espera > error > tanda >
     tarea). No se avisa en la carga inicial ni al cambiar de fuente de datos (`S.primed`).
+12. **Actualización desde el panel: modelo de seguridad.** Descarga y ejecuta código, así que:
+    la fuente es fija (`SOURCE` en `lib/update.mjs`: `lean19r-cell/Nexus`, rama `main`, carpeta
+    `nexus/`) y las URL base solo se cambian por código (pruebas), nunca por configuración ni
+    entorno; la descarga se ancla a la SHA del commit comprobado; **cada archivo se verifica contra el
+    hash de blob git que publica GitHub** antes de instalar; se rechazan rutas peligrosas, enlaces
+    simbólicos y listados truncados; se instala con copia en `~/.claude-nexus/backup/app` y reversión
+    automática si algo falla. La comparación normaliza CRLF→LF en archivos de texto (un clon en
+    Windows los convierte y, si no, siempre saldría «hay cambios»). Si el servidor corre desde un
+    clon de git (`.git` en la carpeta o en su padre) **no se ofrece actualizar** (ahí `git pull`).
+13. **Límite anónimo de GitHub:** la consulta usa la API REST (60 peticiones/hora por IP, 2 por
+    comprobación, cada 6 h por defecto); los archivos salen de `raw.githubusercontent.com`, sin ese
+    límite. Con el límite agotado se muestra «GitHub limitó las consultas…». Detrás de un proxy hace
+    falta `NODE_USE_ENV_PROXY=1` (el `fetch` de Node no lo usa solo).
+14. **Instalar y reiniciar solo es opt-in** (`config.ui.autoUpdate`, apagado por defecto; la
+    comprobación automática, `config.ui.updateCheck`, va encendida). Protecciones: nunca dos
+    instalaciones automáticas de la misma SHA (marcador `~/.claude-nexus/update.json`, evita bucles
+    de reinicio) y solo se reinicia tras una instalación correcta. El reinicio lo hace un proceso
+    aparte (`nexus restart --wait-pid`) que espera a que el servidor viejo suelte el puerto.
+15. **La primera actualización a una versión con botón es manual** (`git pull` + `install` desde un
+    clon): las versiones anteriores no traen el actualizador. Después basta el botón.
 
 ## 5. Cómo trabajar en el proyecto
 
@@ -139,6 +164,10 @@ node tools/build-standalone.mjs           # dist/nexus.html
   Consumo, 1440×900) y enlazarla en la tabla de vistas.
 - Los avisos y los tonos solo se han probado en Chromium con un `AudioContext` simulado; falta
   oírlos en un navegador real.
+- **La actualización desde el panel no se ha probado en Windows** (el usuario usa Windows con Node
+  24): se probó en Linux con GitHub real, un GitHub falso y procesos reales. Puntos a vigilar allí:
+  el reemplazo de archivos con `rename` (si algo lo bloquea, se revierte y avisa), el reinicio con
+  proceso desacoplado y la comparación de CRLF. Si falla, mirar primero el mensaje del panel.
 
 - `README.md` (raíz) tiene el título `# Experimentos` y `nexus/README.md` clona
   `.../Experimentos.git`; el repositorio ahora se llama **Nexus**. Pendiente de confirmar con
@@ -166,6 +195,10 @@ El usuario eligió el 2026-09-29 (por este orden de riesgo):
 4. ✅ **Avisos con sonido** al terminar tandas y tareas — hecho.
 5. ❌ **Sesiones en la nube (claude.ai/code)** — **descartado por el usuario** ("déjalo").
    No investigar salvo que lo pida de nuevo.
+6. ✅ **Botón «descargar actualización» que se actualiza solo** — hecho (petición del usuario tras
+   pelearse con `git pull` dentro de la carpeta de la skill en Windows): cabecera + panel
+   Ajustes → Actualizaciones, `nexus update`/`restart`. «Actualizar ahora» descarga, instala y
+   reinicia de un tirón; la opción de hacerlo sin preguntar existe pero está apagada.
 
 ## 9. Bitácora de sesiones
 
@@ -192,4 +225,17 @@ Formato: fecha · quién/qué herramienta · qué se hizo · qué queda.
   atajos son 1–9 y `0`. Verificado con Playwright de extremo a extremo (marcar, fecha, cambiar de
   etapa, ficha del proyecto) y con pruebas de modelo y CLI (32 en verde). Al escribir las pruebas
   del CLI apareció un fallo real: `--fecha` no estaba en `VALUE_FLAGS` del parser.
-  **Pendiente:** nada de la lista del usuario; las ideas nuevas irán aquí.
+  Este trabajo se fusionó en `main` (PR #3).
+- **2026-09-29 (después de fusionar el PR #3)** · Claude Code (web, rama `claude/lucid-maxwell-jin1x7`
+  reiniciada desde `main`) · El usuario intentó actualizar su copia en Windows con `git pull` dentro
+  de `~/.claude/skills/nexus` (no es un repositorio) y pidió un botón que se actualice solo. Hecho:
+  `lib/update.mjs` (ver decisiones 12–15), integración en el servidor (`/api/update*`,
+  `/api/restart`, SSE `update`, `boot` en `hello`), `nexus update [--check] [--restart]` y
+  `nexus restart`, botón en la cabecera y panel en Ajustes, recarga automática tras reiniciar, docs.
+  Verificado: 47 pruebas; contra el **GitHub real** (copia idéntica → «al día», copia alterada →
+  detecta y repara, copia con CRLF → «al día»); reinicio con procesos reales (pid nuevo en el mismo
+  puerto); `nexus update --restart` real; y de extremo a extremo en Chromium con un GitHub falso
+  (versión «9.9.9»: botón → Actualizar ahora → reinicio → recarga sola). Un dato del entorno: el
+  límite anónimo de la API de GitHub se agotó desde la IP compartida de la nube (403); `curl` pasaba
+  por un proxy con credenciales y en Node hizo falta `NODE_USE_ENV_PROXY=1` para probar en real.
+  **Pendiente:** probarlo en el Windows del usuario; oír los tonos; captura del README de Consumo.

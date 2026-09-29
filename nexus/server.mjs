@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createNodeAdapter, defaultClaudeDir, nexusHome } from './lib/node-fs.mjs';
+import { createUpdater } from './lib/update.mjs';
 
 const require = createRequire(import.meta.url);
 const core = require('./web/js/core.js');
@@ -121,6 +122,7 @@ export async function startServer(options = {}) {
     host: options.host || process.env.NEXUS_HOST || '127.0.0.1',
     claudeDir: path.resolve(options.claudeDir || defaultClaudeDir()),
     home: path.resolve(options.home || nexusHome()),
+    appDir: path.resolve(options.appDir || HERE),
     open: !!options.open,
     quiet: !!options.quiet,
     pollMs: Number(options.pollMs || 1500),
@@ -166,6 +168,37 @@ export async function startServer(options = {}) {
     for (const res of clients) send(res, event, data);
   }
 
+  // ─── actualizaciones y reinicio (ver lib/update.mjs)
+
+  // Identifica esta ejecución: el panel lo compara al reconectar y se recarga solo si el servidor se reinició.
+  const boot = `${startedAt}-${process.pid}`;
+
+  // Un proceso aparte espera a que este termine y arranca el servidor de nuevo con los archivos ya actualizados.
+  async function defaultRestart() {
+    const cli = path.join(opts.appDir, 'bin', 'nexus.mjs');
+    if (!fs.existsSync(cli)) throw new Error('no se encuentra bin/nexus.mjs');
+    const args = [cli, 'restart', '--wait-pid', String(process.pid), '--port', String(opts.port), '--claude-dir', opts.claudeDir, '--home', opts.home];
+    const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
+  }
+
+  async function restartServer() {
+    await (options.restart || defaultRestart)(opts);
+    if (options.exitOnRestart) setTimeout(() => { close().finally(() => process.exit(0)); }, 300);
+  }
+
+  const updater = options.updater === false ? null : createUpdater({
+    appDir: opts.appDir,
+    home: opts.home,
+    getSettings: () => ({ check: config.ui.updateCheck !== false, install: config.ui.autoUpdate === true }),
+    onChange: (state) => broadcast('update', state),
+    restart: restartServer,
+    log: (...args) => log(opts, ...args),
+    ...(options.update || {})
+  });
+  const noUpdater = { supported: false, reason: 'disabled', message: 'Las actualizaciones están desactivadas.' };
+
   collector.onProgress = (meta) => {
     const now = Date.now();
     if (ready || now - lastProgress < 250) return;
@@ -180,7 +213,8 @@ export async function startServer(options = {}) {
     snap.config = config;
     snap.source = 'server';
     snap.claudeDir = opts.claudeDir;
-    snap.server = { version: core.VERSION, pid: process.pid, startedAt, home: opts.home };
+    snap.server = { version: core.VERSION, pid: process.pid, startedAt, home: opts.home, boot };
+    snap.update = updater ? updater.state() : noUpdater;
     return snap;
   }
 
@@ -369,12 +403,13 @@ export async function startServer(options = {}) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
         res.write('retry: 2000\n\n');
         clients.add(res);
-        send(res, 'hello', { seq, ready, version: core.VERSION });
+        send(res, 'hello', { seq, ready, version: core.VERSION, boot });
         req.on('close', () => clients.delete(res));
         return;
       }
       if (req.method === 'GET' && p === '/api/config') return json(req, res, 200, config);
-      if (req.method === 'POST' && (p === '/api/config' || p === '/api/hook' || p === '/api/rescan')) {
+      if (req.method === 'GET' && p === '/api/update') return json(req, res, 200, updater ? updater.state() : noUpdater);
+      if (req.method === 'POST' && ['/api/config', '/api/hook', '/api/rescan', '/api/update/check', '/api/update/install', '/api/restart'].includes(p)) {
         if (!allowedOrigin(req)) return json(req, res, 403, { error: 'origen no permitido' });
         if (!/application\/json/.test(req.headers['content-type'] || '')) return json(req, res, 415, { error: 'se espera JSON' });
         const raw = await readBody(req);
@@ -384,7 +419,15 @@ export async function startServer(options = {}) {
           config = core.normalizeConfig(body);
           await writeAtomic(configFile, JSON.stringify(config, null, 2));
           broadcast('config', config);
+          if (updater) broadcast('update', updater.state()); // los interruptores de actualización viven en la configuración
           return json(req, res, 200, config);
+        }
+        if (p === '/api/update/check') return json(req, res, 200, updater ? await updater.check() : noUpdater);
+        if (p === '/api/update/install') return json(req, res, 200, updater ? await updater.install() : noUpdater);
+        if (p === '/api/restart') {
+          json(req, res, 200, { ok: true });
+          setTimeout(() => restartServer().catch((err) => log(opts, 'no se pudo reiniciar:', err.message)), 100);
+          return;
         }
         if (p === '/api/hook') {
           onHook(body || {});
@@ -424,6 +467,8 @@ export async function startServer(options = {}) {
   log(opts, `escaneo inicial: ${Object.keys(collector.sessions).length} sesiones en ${Date.now() - t0} ms`);
   if (opts.cache) await store.flush(collector).catch((err) => log(opts, 'no se pudo guardar la caché:', err.message));
 
+  if (updater) updater.start();
+
   let lastFull = Date.now();
   const poll = setInterval(() => {
     const full = Date.now() - lastFull >= opts.fullMs;
@@ -441,6 +486,7 @@ export async function startServer(options = {}) {
   async function close() {
     if (closed) return;
     closed = true;
+    if (updater) updater.stop();
     clearInterval(poll);
     clearInterval(heartbeat);
     if (flush) clearInterval(flush);
@@ -454,7 +500,7 @@ export async function startServer(options = {}) {
     } catch { /* nada */ }
   }
 
-  return { url, server, collector, close, get ready() { return ready; }, opts };
+  return { url, server, collector, updater, close, get ready() { return ready; }, opts };
 }
 
 // ───────────────────────────────────────────────────────────── ejecución directa
@@ -481,7 +527,7 @@ export function parseArgs(argv) {
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (isMain) {
   const args = parseArgs(process.argv.slice(2));
-  startServer(args).then((srv) => {
+  startServer({ ...args, exitOnRestart: true }).then((srv) => {
     if (args.demo) openBrowser(srv.url + '?demo');
     const stop = async () => {
       await srv.close();
