@@ -228,6 +228,21 @@
 
     function addTool(s, name, n) { s.tools[name] = (s.tools[name] || 0) + n; }
 
+    // Consumo por hora y modelo, con la misma forma que lo guarda el parser (bumpUse en core.js).
+    function addUse(s, t, dur, i, o, r, w) {
+      var h0 = Math.floor(t / HOUR);
+      var h1 = Math.floor((t + dur) / HOUR);
+      var span = h1 - h0 + 1;
+      for (var h = h0; h <= h1; h++) {
+        var k = h + '|' + s.model;
+        var a = s.use[k] || (s.use[k] = [0, 0, 0, 0]);
+        a[0] += Math.round(i / span);
+        a[1] += Math.round(o / span);
+        a[2] += Math.round(r / span);
+        a[3] += Math.round(w / span);
+      }
+    }
+
     function mkRun(p, s, t, dur, prompt, st, feed) {
       var tools = rint(5, 58);
       var ed = Math.round(tools * (0.08 + R() * 0.22));
@@ -250,10 +265,14 @@
       s.counts.subagents += sub;
       s.counts.errors += run.err;
       if (run.st === 'int') s.counts.interrupts++;
+      var cr = Math.round(tk * 0.84);
+      var cw = Math.round(tk * 0.1);
+      var inp = Math.max(0, tk - out - cr - cw);
       s.tokens.out += out;
-      s.tokens.cr += Math.round(tk * 0.84);
-      s.tokens.cw += Math.round(tk * 0.1);
-      s.tokens.in += Math.max(0, tk - out - Math.round(tk * 0.84) - Math.round(tk * 0.1));
+      s.tokens.cr += cr;
+      s.tokens.cw += cw;
+      s.tokens.in += inp;
+      addUse(s, t, dur, inp, out, cr, cw);
       addTool(s, 'Bash', bash);
       addTool(s, 'Edit', Math.max(0, ed - 1));
       addTool(s, 'Write', Math.min(1, ed));
@@ -485,6 +504,7 @@
             s.tokens.cr += Math.round(tk * 0.86);
             s.tokens.out += Math.round(tk * 0.02);
             s.tokens.cw += tk - Math.round(tk * 0.86) - Math.round(tk * 0.02);
+            addUse(s, t, 0, 0, Math.round(tk * 0.02), Math.round(tk * 0.86), tk - Math.round(tk * 0.86) - Math.round(tk * 0.02));
             if (ev.name === 'Edit' || ev.name === 'Write') {
               run.ed++;
               s.counts.edits++;

@@ -607,6 +607,8 @@ body.fx-off .fx-scan, body.fx-off .fx-grid { display: none; }
   gap: var(--gap);
 }
 
+.kpis.k4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
 /* ─────────────────────────────────────────── KPI */
 
 .kpi {
@@ -928,6 +930,7 @@ svg.st { width: 16px; height: 16px; flex: none; }
 }
 
 .input:focus, .select:focus { border-color: var(--blue); }
+.input.num { width: 84px; padding-inline: 8px; text-align: right; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
 .input::placeholder { color: var(--dim); }
 .select { padding-right: 28px; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--steel) 50%), linear-gradient(135deg, var(--steel) 50%, transparent 50%); background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px; background-size: 5px 5px; background-repeat: no-repeat; }
 .select option { background: var(--hull); color: var(--ice); }
@@ -1473,6 +1476,8 @@ table.plain .select { width: 100%; min-width: 150px; }
 
 .toast.warn { --edge: rgba(255, 178, 62, 0.7); }
 .toast.done { --edge: rgba(60, 240, 180, 0.55); }
+.toast.error { --edge: rgba(255, 92, 122, 0.65); }
+.toast.error b { color: var(--red); }
 .toast b { display: block; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 2px; }
 .toast.warn b { color: var(--amber); }
 .toast.done b { color: var(--mint); }
@@ -1529,6 +1534,7 @@ table.plain .select { width: 100%; min-width: 150px; }
 
 @media (max-width: 1280px) {
   .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kpis.k4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .g-over > .span-7, .g-over > .span-5, .g-over > .span-8, .g-over > .span-4 { grid-column: span 12; }
   .detail-grid { grid-template-columns: minmax(0, 1fr); }
 }

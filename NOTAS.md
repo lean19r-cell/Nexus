@@ -21,13 +21,17 @@ privado (el servidor solo escucha en `127.0.0.1:2077`).
 ## 2. Estado actual (2026-09-29)
 
 - Versión `1.0.0` (`web/js/core.js` → `VERSION`; `package.json`).
-- `main` y la rama de trabajo apuntan al mismo commit (`7a0bbd4`, PR #2 fusionado).
-- **22 pruebas, todas en verde** (`cd nexus && npm test`, ~1 s).
+- `main` está en `7a0bbd4` (PR #2 fusionado). El trabajo nuevo va en la rama
+  `claude/lucid-maxwell-jin1x7` (sin PR abierto todavía; el usuario no lo ha pedido).
+- **30 pruebas, todas en verde** (`cd nexus && npm test`, ~1 s).
 - **Sin dependencias** (solo Node ≥ 18 y el navegador). Mantener así.
-- Funcionalidad ya hecha: 7 vistas (Mando, Proyectos, Tareas, Planes, Tandas, Sesiones,
-  Ajustes), servidor con escaneo incremental + caché + SSE, hooks opcionales, CLI completo,
-  skill `/nexus`, modo navegador sin Node (File System Access API), demo con datos vivos,
-  build a HTML único, acceso directo de escritorio (Mac/Windows/Linux), iconos, vista móvil.
+- Funcionalidad ya hecha: 8 vistas (Mando, Proyectos, Tareas, Planes, Tandas, Sesiones,
+  Consumo, Ajustes), servidor con escaneo incremental + caché + SSE, hooks opcionales, CLI
+  completo, skill `/nexus`, modo navegador sin Node (File System Access API), demo con datos
+  vivos, build a HTML único, acceso directo de escritorio (Mac/Windows/Linux), iconos, vista móvil.
+- **Añadido el 2026-09-29:** vista y comando **Consumo** (tokens y coste estimado por día,
+  proyecto y modelo, precios editables en Ajustes) y **avisos con sonido** al terminar una
+  tanda o una tarea (ver bitácora).
 
 ## 3. Mapa del código (`nexus/`)
 
@@ -46,7 +50,14 @@ privado (el servidor solo escucha en `127.0.0.1:2077`).
 | `lib/shortcut.mjs` | Acceso directo de escritorio por plataforma. |
 | `tools/build-standalone.mjs` | Genera `dist/nexus.html` (todo en línea). `dist/` está en `.gitignore`. |
 | `tools/build-icons.mjs` | Regenera `.icns/.ico/.png` desde `assets/icon.svg`. |
-| `test/*.test.mjs` | `node --test`. `helpers.mjs` fabrica transcripciones sintéticas con la forma real de Claude Code 2.1.x y un FS en memoria. |
+| `test/*.test.mjs` | `node --test`. `helpers.mjs` fabrica transcripciones sintéticas con la forma real de Claude Code 2.1.x y un FS en memoria. `cli.test.mjs` ejecuta el CLI real contra carpetas temporales. |
+
+Piezas del **consumo** (todas en `web/js/core.js`): `bumpUse` guarda por sesión `use`
+(`"<hora UTC>|<modelo>" → [in, out, cacheRead, cacheWrite]`); `buildModel` lo agrupa por día
+local, proyecto y modelo en `model.usage` (`buildUsage`); `aggregateUsage(usage, {from, to,
+project, projects, model})` suma y calcula el coste (lo usan la vista y `nexus usage`);
+`PRICES`/`priceFor`/`normModel`/`modelName` son la tabla de precios y utilidades.
+Los **avisos** viven en `web/js/app.js` (`transitions`, `alertUser`, `playSound`).
 | `SKILL.md` | La skill `/nexus` (qué comando ejecutar según la petición). |
 
 ### API del servidor (`127.0.0.1:2077`)
@@ -79,6 +90,24 @@ Todo lo demás (GET) sirve estáticos desde `web/`.
    contenido, investigación, ops, otros. Detección automática por nombre de carpeta / uso de
    `ffmpeg`, `whisper`, `yt-dlp`; editable por el usuario.
 
+8. **No subir `STATE_VERSION` para añadir campos.** `importState` descarta las sesiones
+   cacheadas de otra versión, y las que ya no tienen transcripción (Claude Code las borra a los
+   30 días) perderían su historial. En su lugar el campo nuevo es opcional y se rellena de forma
+   perezosa: `_checkTranscript` relee una sesión sin `use` solo si su transcripción principal
+   aún existe; si no, se conserva tal cual y `buildModel` usa su total como respaldo
+   (`usage.legacy` cuenta cuántas). Solo subir `STATE_VERSION` si el formato cambia de forma
+   incompatible.
+9. **El coste es una estimación.** Precios de lista de la API (tabla `PRICES`, fecha en
+   `PRICES_CHECKED`, tomados de la lista de modelos de la skill `claude-api` el 2026-09-25);
+   la caché escrita se calcula a 1,25× la entrada (caché de 5 min). El usuario los puede
+   corregir en Ajustes (`config.prices`, validados por `cleanPrices`); un modelo sin precio
+   muestra solo tokens. Al cambiar precios de lista, actualizar `PRICES` **y** `PRICES_CHECKED`.
+10. **Los atajos numéricos siguen el orden del menú lateral** (`.rail .nav`), no un mapa fijo:
+    añadir una sección en `index.html` no obliga a renumerar nada.
+11. **Avisos:** un mismo repaso puede terminar varias cosas; hasta 3 se avisan por separado y a
+    partir de ahí en resumen, y suena un único tono (prioridad: te espera > error > tanda >
+    tarea). No se avisa en la carga inicial ni al cambiar de fuente de datos (`S.primed`).
+
 ## 5. Cómo trabajar en el proyecto
 
 ```bash
@@ -104,6 +133,12 @@ node tools/build-standalone.mjs           # dist/nexus.html
 
 ## 7. Detalles a corregir / cabos sueltos
 
+- Falta una captura `nexus/docs/consumo.jpg` para el README: en el entorno de la nube no cargan
+  las fuentes de Google y saldría con otra tipografía. Hacerla en local (`nexus demo`, vista
+  Consumo, 1440×900) y enlazarla en la tabla de vistas.
+- Los avisos y los tonos solo se han probado en Chromium con un `AudioContext` simulado; falta
+  oírlos en un navegador real.
+
 - `README.md` (raíz) tiene el título `# Experimentos` y `nexus/README.md` clona
   `.../Experimentos.git`; el repositorio ahora se llama **Nexus**. Pendiente de confirmar con
   el usuario si se renombra todo.
@@ -112,8 +147,16 @@ node tools/build-standalone.mjs           # dist/nexus.html
 
 ## 8. Ideas para seguir (sin decidir; el usuario elige el rumbo)
 
-_Sin backlog priorizado todavía. Cuando el usuario decida una dirección, anótala aquí y
-pásala a "Bitácora" al empezar._
+El usuario eligió el 2026-09-29 (por este orden de riesgo):
+
+1. ✅ **Coste y tokens** — hecho (vista Consumo + `nexus usage`).
+2. ⏳ **Seguimiento de tandas y tareas** — vista unificada con pendientes, activas, esperándote,
+   completadas y con problemas. Petición nueva del usuario a mitad de sesión.
+3. ⏳ **Flujo de vídeos del canal** — checklist por etapa, fecha objetivo y pipeline; requiere
+   guardar estado nuevo por proyecto vídeo en `config.projects[...]`.
+4. ✅ **Avisos con sonido** al terminar tandas y tareas — hecho.
+5. ❌ **Sesiones en la nube (claude.ai/code)** — **descartado por el usuario** ("déjalo").
+   No investigar salvo que lo pida de nuevo.
 
 ## 9. Bitácora de sesiones
 
@@ -124,4 +167,14 @@ Formato: fecha · quién/qué herramienta · qué se hizo · qué queda.
   escritorio. 22 pruebas verdes.
 - **2026-09-29** · Claude Code (web, rama `claude/lucid-maxwell-jin1x7`) · El usuario quiere
   seguir desarrollando NEXUS. Se revisó el estado (todo al día, pruebas verdes) y se
-  crearon estas notas (`NOTAS.md`) y `CLAUDE.md`. Falta: decidir la próxima funcionalidad.
+  crearon estas notas (`NOTAS.md`) y `CLAUDE.md`.
+- **2026-09-29 (misma sesión, después)** · Claude Code (web) · El usuario eligió rumbo (ver §8).
+  Hecho: (a) **Consumo**: colector guarda tokens por hora y modelo (`use`), `buildModel` produce
+  `usage`, vista Consumo (KPIs, barras diarias/semanales, tablas por proyecto y modelo),
+  editor de precios en Ajustes, `nexus usage [--days --todo --project --json]`, demo con datos
+  de consumo, pruebas de parser/colector/modelo/CLI; (b) **avisos con sonido** de tandas y
+  tareas terminadas con 4 tonos, ajustes propios y botones de prueba; (c) atajos numéricos
+  derivados del menú. Verificado con Playwright (capturas de escritorio y móvil, edición de
+  precio, avisos reales de la demo) y con datos reales de esta sesión (`nexus usage` → Sonnet
+  5.5, 15,2M tokens, ≈$4,86). El usuario descartó las sesiones en la nube. Pendiente: seguimiento
+  unificado de tandas y tareas, y flujo de vídeos.

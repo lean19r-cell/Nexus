@@ -29,6 +29,8 @@ node nexus/bin/nexus.mjs open        # arranca el servidor y abre http://127.0.0
 
 Reinicia Claude Code o Claude Desktop y ya puedes escribir `/nexus` o preguntarle «¿qué tengo pendiente?».
 
+**Actualizar:** tras traer una versión nueva vuelve a ejecutar `node nexus/bin/nexus.mjs install` (refresca la skill) y reinicia el servidor con `node nexus/bin/nexus.mjs stop` y luego `open`. La primera vez releerá tus transcripciones para calcular el consumo por día y modelo; tu historial guardado no se pierde.
+
 ### Acceso directo (doble clic)
 
 ```bash
@@ -67,9 +69,20 @@ Para ver cómo se ve sin tus datos: `node nexus/bin/nexus.mjs demo`.
 | **Planes** | Cada plan del modo plan con su estado (pendiente, aprobado, rechazado, borrador) y su texto renderizado. |
 | **Tandas** | Cada instrucción tuya y lo que Claude hizo para cumplirla: duración, herramientas, archivos editados, tokens, errores e interrupciones. |
 | **Sesiones** | Tabla ordenable de todas las conversaciones, con origen (Desktop, CLI, VS Code…) y el comando para retomarlas (`claude --resume <id>`). |
-| **Ajustes** | Categoría, etapa y visibilidad de cada proyecto, avisos (en el panel, del sistema, sonido) y efectos visuales. |
+| **Consumo** | Tokens y coste **estimado** por día (o semana), proyecto y modelo, con la lectura de caché. Usa los precios de lista de la API, que puedes corregir en Ajustes; un modelo sin precio muestra solo tokens. |
+| **Ajustes** | Categoría, etapa y visibilidad de cada proyecto, precios de los modelos, avisos (en el panel, del sistema, con sonido) y efectos visuales. |
 
-Atajos: `/` busca en todo, `1`–`7` cambian de vista, `Esc` cierra.
+Atajos: `/` busca en todo, `1`–`8` cambian de vista (siguen el orden del menú lateral), `Esc` cierra.
+
+### Avisos con sonido
+
+NEXUS te avisa, con un toast en el panel y opcionalmente con una notificación del sistema (si la pestaña está en segundo plano) y un tono, cuando:
+
+- una sesión **te espera** (permiso, pregunta o plan por aprobar);
+- una **tanda termina**: completada, interrumpida o con errores;
+- una **tarea se completa** (tareas de Claude Code y elementos de las listas TODO).
+
+Cada tipo de aviso se activa por separado en **Ajustes → Avisos**, que también tiene botones para probar los cuatro tonos. Si terminan varias cosas a la vez se agrupan en un solo aviso y suena un único tono. El navegador solo reproduce sonido después de que hayas hecho clic o pulsado una tecla en la página.
 
 | Proyectos | Tareas |
 |---|---|
@@ -105,6 +118,7 @@ Por debajo usa el CLI:
 | `nexus status [--project X] [--json]` | Resumen: te esperan, trabajando, tareas abiertas, planes pendientes |
 | `nexus tasks [--project X] [--all]` | Tareas abiertas por proyecto |
 | `nexus projects` | Proyectos con categoría, etapa y avance |
+| `nexus usage [--days N] [--todo] [--project X] [--json]` | Consumo de tokens y coste estimado por proyecto, modelo y día (30 días por defecto) |
 | `nexus tag <categoría> [--etapa X] [--nombre Y]` | Clasifica el proyecto de la carpeta actual |
 | `nexus start` / `stop` | Servidor en primer plano / detenerlo |
 | `nexus shortcut [--remove]` | Crea (o quita) el acceso directo del escritorio |
@@ -130,6 +144,8 @@ NEXUS solo lee; nunca escribe en `~/.claude` (salvo `settings.json` cuando insta
 - Solo ve las sesiones que se ejecutan **en tu ordenador**. Las sesiones en la nube de claude.ai/code no escriben en tu `~/.claude`.
 - El formato interno de `~/.claude` no es una API pública; si una versión futura de Claude Code lo cambia, puede hacer falta actualizar el lector. Las líneas que no entiende se ignoran sin romper nada.
 - El modo carpeta del navegador solo funciona en Chrome y Edge (File System Access API).
+- El **coste es una estimación**: multiplica los tokens por los precios de lista de la API (revisados en la fecha que muestra la vista Consumo) y no incluye descuentos, caché de 1 hora ni impuestos. Con una suscripción (Pro/Max) no pagas por token: úsalo como medida de esfuerzo.
+- El desglose por día y modelo solo existe para lo que NEXUS ha leído con esta versión. Las sesiones guardadas antes cuya transcripción ya no existe cuentan todo su consumo en su último día y modelo.
 
 ## Desarrollo
 
@@ -156,7 +172,7 @@ nexus/
 
 ```bash
 cd nexus
-npm test                                  # 22 pruebas: parser, colector, modelo, servidor, instalación, acceso directo
+npm test                                  # 30 pruebas: parser, colector, modelo, consumo, servidor, CLI, instalación, acceso directo
 node tools/build-standalone.mjs           # dist/nexus.html, un único archivo para abrir con doble clic
 ```
 
