@@ -264,6 +264,7 @@
       stopReason: null,
       signals: { media: 0 },
       act: {},
+      use: {},
       archived: false,
       _pending: {}
     };
@@ -283,6 +284,16 @@
       s._actMax = h;
       for (var key in s.act) if (has(s.act, key) && +key < h - 72) delete s.act[key];
     }
+  }
+
+  // Consumo de tokens por hora y modelo (todo el historial de la sesión): "<hora>|<modelo>" → [in, out, cr, cw].
+  // Alimenta la vista Consumo; la hora se pasa a día local al agregar, así no depende de la zona horaria.
+  function bumpUse(s, t, model, d) {
+    if (!t || !(d.i || d.o || d.r || d.w)) return;
+    if (!s.use) s.use = {};
+    var k = Math.floor(t / 3600000) + '|' + (model || '?');
+    var a = s.use[k] || (s.use[k] = [0, 0, 0, 0]);
+    a[0] += d.i; a[1] += d.o; a[2] += d.r; a[3] += d.w;
   }
 
   function touch(s, t) {
@@ -568,7 +579,7 @@
     addFeed(s, t, 'prompt', (src === 'command' ? '' : '» ') + label);
   }
 
-  function addUsage(s, run, u, ctx, mid, t) {
+  function addUsage(s, run, u, ctx, mid, t, model) {
     // Una misma respuesta se escribe en varias líneas (una por bloque) repitiendo usage:
     // se suma solo el incremento respecto a lo ya contado para ese message.id.
     var inT = +u.input_tokens || 0, outT = +u.output_tokens || 0;
@@ -583,6 +594,7 @@
       : [inT, outT, cr, cw];
     s.tokens.in += d.i; s.tokens.out += d.o; s.tokens.cr += d.r; s.tokens.cw += d.w;
     bumpAct(s, t, 0, d.i + d.o + d.r + d.w);
+    bumpUse(s, t, model, d);
     if (run) { run.out += d.o; run.tk += d.i + d.o + d.r + d.w; }
   }
 
@@ -599,7 +611,7 @@
         if (!ctx.sub) s.model = m.model;
       }
     }
-    if (m.usage && typeof m.usage === 'object') addUsage(s, run, m.usage, ctx, mid, t);
+    if (m.usage && typeof m.usage === 'object') addUsage(s, run, m.usage, ctx, mid, t, m.model || s.model);
     else if (isNew) { ctx.mid = mid; ctx.mu = null; }
     if (e.isApiErrorMessage || e.error) {
       s.counts.errors++;
@@ -800,6 +812,13 @@
     }
     if (!rec) {
       rec = this.files[rel] = { size: -1, mtime: 0, off: 0, sid: info.sid || null, dir: info.dir || null, sub: !!info.sub, mid: null, mu: null };
+    }
+    if (!rec.sub && rec.sid && has(this.sessions, rec.sid) && !this.sessions[rec.sid].use) {
+      // Sesión guardada antes de existir el desglose de consumo (`use`): se relee entera mientras su
+      // transcripción siga en disco. Si ya no existe, se conserva tal cual para no perder su historial.
+      this._resetSession(rec.sid);
+      changes.sessions[rec.sid] = 1;
+      changes.rebuild[rec.sid] = 1;
     }
     if (st.size === rec.size && st.mtime === rec.mtime) return rec;
     if (st.size < rec.off) {
@@ -1183,8 +1202,60 @@
     other: ['Backlog', 'En curso', 'Revisión', 'Hecho']
   };
 
+  // Lista de comprobación de cada etapa (solo vídeo por ahora): [id estable, texto]. El estado guardado por
+  // proyecto es { id: true } en config.projects[clave].checks; los ids son únicos entre etapas y no se
+  // reutilizan, así que se puede reescribir el texto sin perder lo marcado.
+  var CHECKLISTS = {
+    video: {
+      'Idea': [['idea-tema', 'Tema elegido'], ['idea-titulo', 'Título provisional'], ['idea-ref', 'Referencias y competencia vistas']],
+      'Guion': [['guion-gancho', 'Gancho y estructura'], ['guion-escrito', 'Guion escrito'], ['guion-revisado', 'Guion revisado']],
+      'Grabación': [['grab-material', 'Material y escenario listos'], ['grab-tomas', 'Tomas grabadas'], ['grab-audio', 'Audio comprobado']],
+      'Edición': [['edic-corte', 'Corte base'], ['edic-extras', 'Música, efectos y rótulos'], ['edic-subs', 'Subtítulos'], ['edic-final', 'Revisión final']],
+      'Miniatura': [['mini-diseno', 'Miniatura diseñada'], ['mini-texto', 'Título y descripción'], ['mini-tags', 'Etiquetas y capítulos']],
+      'Publicado': [['pub-subido', 'Subido'], ['pub-programado', 'Publicado o programado'], ['pub-difusion', 'Compartido en redes']]
+    }
+  };
+
+  /** 'AAAA-MM-DD' de un día real del calendario, o null. */
+  function validDay(v) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof v === 'string' ? v : '');
+    if (!m) return null;
+    return dayKey(new Date(+m[1], +m[2] - 1, +m[3], 12).getTime()) === v ? v : null;
+  }
+
+  function cleanChecks(src) {
+    var out = {};
+    if (src && typeof src === 'object') {
+      for (var id in src) if (has(src, id) && src[id] === true && id.length <= 40) out[id] = true;
+    }
+    return out;
+  }
+
+  /**
+   * Avance del flujo de un proyecto de una categoría con lista de comprobación (null si no tiene):
+   * { stages: [{ name, done, total }], index (etapa actual, -1 si no hay), items: [{ id, label, done }] de la
+   * etapa actual, done y total de todo el flujo }.
+   */
+  function flowOf(category, stage, checks) {
+    var tpl = CHECKLISTS[category];
+    if (!tpl) return null;
+    checks = checks || {};
+    var names = STAGES[category];
+    var done = 0, total = 0;
+    var stages = names.map(function (name) {
+      var items = tpl[name] || [];
+      var d = items.filter(function (it) { return has(checks, it[0]); }).length;
+      done += d;
+      total += items.length;
+      return { name: name, done: d, total: items.length };
+    });
+    var idx = names.indexOf(stage);
+    var items = idx < 0 ? [] : (tpl[names[idx]] || []).map(function (it) { return { id: it[0], label: it[1], done: has(checks, it[0]) }; });
+    return { stages: stages, index: idx, items: items, done: done, total: total };
+  }
+
   function defaultConfig() {
-    return { version: 1, projects: {}, aliases: {}, ui: {} };
+    return { version: 1, projects: {}, aliases: {}, ui: {}, prices: {} };
   }
 
   function normalizeConfig(cfg) {
@@ -1193,8 +1264,159 @@
       if (cfg.projects && typeof cfg.projects === 'object') c.projects = cfg.projects;
       if (cfg.aliases && typeof cfg.aliases === 'object') c.aliases = cfg.aliases;
       if (cfg.ui && typeof cfg.ui === 'object') c.ui = cfg.ui;
+      if (cfg.prices && typeof cfg.prices === 'object') c.prices = cleanPrices(cfg.prices);
     }
     return c;
+  }
+
+  // ───────────────────────────────────────────────────────────── precios y consumo
+
+  // Precios de lista de la API de Anthropic, en USD por millón de tokens, revisados en PRICES_CHECKED:
+  // [entrada, salida, lectura de caché, escritura de caché (5 min)]. Son solo una estimación: con una
+  // suscripción (Pro/Max) no se paga por token, y los precios cambian. El usuario puede corregirlos o
+  // añadir modelos en Ajustes (config.prices); un modelo sin precio muestra solo tokens.
+  var PRICES_CHECKED = '2026-09-25';
+  var PRICES = {
+    'claude-fable-5-1': [10, 50, 0.25, 12.5],
+    'claude-mythos-5-1': [10, 50, 0.25, 12.5],
+    'claude-fable-5': [10, 50, 1, 12.5],
+    'claude-opus-5-5': [4, 20, 0.2, 5],
+    'claude-opus-5': [5, 25, 0.5, 6.25],
+    'claude-opus-4-8': [5, 25, 0.5, 6.25],
+    'claude-opus-4-7': [5, 25, 0.5, 6.25],
+    'claude-opus-4-6': [5, 25, 0.5, 6.25],
+    'claude-sonnet-5-5': [2, 10, 0.2, 2.5],
+    'claude-sonnet-5': [2, 10, 0.2, 2.5],
+    'claude-sonnet-4-6': [3, 15, 0.3, 3.75],
+    'claude-haiku-4-5': [1, 5, 0.1, 1.25]
+  };
+
+  /** Id de modelo sin sufijos de contexto ([1m]), fecha (-20251001) ni prefijo de nube (anthropic.). */
+  function normModel(id) {
+    if (!id || id === '?') return 'desconocido';
+    return String(id).toLowerCase().replace(/\[.*\]$/, '').replace(/^anthropic\./, '').replace(/[@-]\d{8}(-v\d+:\d+)?$/, '');
+  }
+
+  function priceNum(v) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = +v;
+    return isFinite(n) && n >= 0 && n < 100000 ? n : null;
+  }
+
+  /** Solo se guardan precios válidos: entrada y salida obligatorias; caché opcional (se deriva de la entrada). */
+  function cleanPrices(src) {
+    var out = {};
+    for (var id in src) {
+      if (!has(src, id) || !src[id] || typeof src[id] !== 'object') continue;
+      var p = src[id];
+      var pin = priceNum(p.in), pout = priceNum(p.out);
+      if (pin === null || pout === null) continue;
+      var rec = { in: pin, out: pout };
+      var cr = priceNum(p.cr), cw = priceNum(p.cw);
+      if (cr !== null) rec.cr = cr;
+      if (cw !== null) rec.cw = cw;
+      out[normModel(id)] = rec;
+    }
+    return out;
+  }
+
+  /** Precio efectivo de un modelo ({in, out, cr, cw, custom}) o null si no se conoce. */
+  function priceFor(model, custom) {
+    var id = normModel(model);
+    var c = custom && has(custom, id) ? custom[id] : null;
+    if (c) return { in: c.in, out: c.out, cr: c.cr !== undefined ? c.cr : c.in * 0.1, cw: c.cw !== undefined ? c.cw : c.in * 1.25, custom: true };
+    if (has(PRICES, id)) {
+      var p = PRICES[id];
+      return { in: p[0], out: p[1], cr: p[2], cw: p[3], custom: false };
+    }
+    return null;
+  }
+
+  /** Une el acumulado { "día|proyecto|modelo": {d, k, m, v} } en tablas indexadas y compactas. */
+  function buildUsage(acc, cfg, legacy) {
+    var list = [];
+    var totalByModel = {};
+    for (var k in acc) {
+      if (!has(acc, k)) continue;
+      var r = acc[k];
+      list.push(r);
+      totalByModel[r.m] = (totalByModel[r.m] || 0) + r.v[0] + r.v[1] + r.v[2] + r.v[3];
+    }
+    var days = [], keys = [], models = Object.keys(totalByModel);
+    var seenDay = {}, seenKey = {};
+    list.forEach(function (x) {
+      if (!has(seenDay, x.d)) { seenDay[x.d] = 1; days.push(x.d); }
+      if (!has(seenKey, x.k)) { seenKey[x.k] = 1; keys.push(x.k); }
+    });
+    days.sort();
+    models.sort(function (a, b) { return totalByModel[b] - totalByModel[a]; });
+    var di = {}, ki = {}, mi = {};
+    days.forEach(function (d, i) { di[d] = i; });
+    keys.forEach(function (x, i) { ki[x] = i; });
+    models.forEach(function (x, i) { mi[x] = i; });
+    var rows = list.map(function (x) { return [di[x.d], ki[x.k], mi[x.m], x.v[0], x.v[1], x.v[2], x.v[3]]; });
+    rows.sort(function (a, b) { return a[0] - b[0]; });
+    return {
+      days: days, keys: keys, models: models, rows: rows,
+      prices: models.map(function (m) { return priceFor(m, cfg.prices); }),
+      checked: PRICES_CHECKED,
+      legacy: legacy || 0
+    };
+  }
+
+  /** claude-opus-5-5 → «Opus 5.5»; lo que no encaja con esa forma se devuelve tal cual. */
+  function modelName(id) {
+    var m = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?$/.exec(id || '');
+    if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' ' + m[2] + (m[3] ? '.' + m[3] : '');
+    return id === 'desconocido' ? 'Desconocido' : String(id || '');
+  }
+
+  /**
+   * Suma el consumo del `usage` de buildModel. Filtros opcionales: from / to (días 'AAAA-MM-DD', ambos
+   * incluidos), project (clave), projects (lista de claves) y model. Devuelve { total, byDay, byModel, byProject }; cada registro tiene
+   * i/o/r/w (entrada, salida, lectura y escritura de caché), tokens, cost (USD estimados, solo de lo que
+   * tiene precio) y unpriced (tokens de modelos sin precio, que no entran en cost).
+   */
+  function aggregateUsage(usage, opts) {
+    opts = opts || {};
+    function blank(extra) {
+      var o = { i: 0, o: 0, r: 0, w: 0, tokens: 0, cost: 0, unpriced: 0 };
+      for (var k in extra) if (has(extra, k)) o[k] = extra[k];
+      return o;
+    }
+    function add(rec, row, price) {
+      var tk = row[3] + row[4] + row[5] + row[6];
+      rec.i += row[3]; rec.o += row[4]; rec.r += row[5]; rec.w += row[6];
+      rec.tokens += tk;
+      if (price) rec.cost += (row[3] * price.in + row[4] * price.out + row[5] * price.cr + row[6] * price.cw) / 1e6;
+      else rec.unpriced += tk;
+    }
+    var out = { total: blank(), byDay: [], byModel: [], byProject: [] };
+    if (!usage || !usage.rows) return out;
+    var byDay = {}, byModel = {}, byProject = {};
+    var only = null;
+    if (opts.projects) {
+      only = {};
+      opts.projects.forEach(function (k) { only[k] = 1; });
+    }
+    for (var n = 0; n < usage.rows.length; n++) {
+      var row = usage.rows[n];
+      var day = usage.days[row[0]], key = usage.keys[row[1]], model = usage.models[row[2]];
+      if (opts.from && day < opts.from) continue;
+      if (opts.to && day > opts.to) continue;
+      if (opts.project && key !== opts.project) continue;
+      if (only && !has(only, key)) continue;
+      if (opts.model && model !== opts.model) continue;
+      var price = usage.prices[row[2]];
+      add(out.total, row, price);
+      add(has(byDay, day) ? byDay[day] : (byDay[day] = blank({ day: day })), row, price);
+      add(has(byModel, model) ? byModel[model] : (byModel[model] = blank({ model: model, price: price })), row, price);
+      add(has(byProject, key) ? byProject[key] : (byProject[key] = blank({ key: key })), row, price);
+    }
+    out.byDay = Object.keys(byDay).sort().map(function (d) { return byDay[d]; });
+    out.byModel = values(byModel).sort(function (a, b) { return b.tokens - a.tokens; });
+    out.byProject = values(byProject).sort(function (a, b) { return (b.cost - a.cost) || (b.tokens - a.tokens); });
+    return out;
   }
 
   var RE_VIDEO = /(video|vídeo|youtube|(^|[^a-z])yt([^a-z]|$)|canal|shorts?|reels?|tiktok|podcast|stream|edici[oó]n|gui[oó]n|thumbnail|miniatura|clips?|montaje|episod|capitulo|capítulo)/i;
@@ -1311,6 +1533,9 @@
           name: pc.name || null,
           category: CATEGORY_IDS[pc.category] ? pc.category : null,
           stage: pc.stage || null,
+          due: validDay(pc.due),
+          checks: cleanChecks(pc.checks),
+          flow: null,
           notes: pc.notes || '',
           pinned: !!pc.pinned,
           hidden: !!pc.hidden,
@@ -1348,11 +1573,37 @@
       return daily[k];
     }
 
+    // Consumo de tokens: se acumula por día local, proyecto y modelo (ver buildUsage / aggregateUsage).
+    var useAcc = {};
+    var useLegacy = 0;
+    var dayOfHour = {};
+    function addUseRow(hour, key, model, v) {
+      var day = has(dayOfHour, hour) ? dayOfHour[hour] : (dayOfHour[hour] = dayKey(hour * 3600000 + 1800000));
+      var mk = normModel(model);
+      var id = day + '\n' + key + '\n' + mk;
+      var a = has(useAcc, id) ? useAcc[id].v : (useAcc[id] = { d: day, k: key, m: mk, v: [0, 0, 0, 0] }).v;
+      a[0] += v[0]; a[1] += v[1]; a[2] += v[2]; a[3] += v[3];
+    }
+    function addUse(s, key) {
+      if (s.use) {
+        for (var uk in s.use) {
+          if (!has(s.use, uk)) continue;
+          var cut = uk.indexOf('|');
+          addUseRow(+uk.slice(0, cut), key, uk.slice(cut + 1), s.use[uk]);
+        }
+      } else if (s.tokens && (s.tokens.in || s.tokens.out || s.tokens.cr || s.tokens.cw)) {
+        // Sesión guardada antes del desglose y cuya transcripción ya no existe: todo a su último día y modelo.
+        useLegacy++;
+        addUseRow(Math.floor((s.updatedAt || now) / 3600000), key, s.model, [s.tokens.in, s.tokens.out, s.tokens.cr, s.tokens.cw]);
+      }
+    }
+
     var ids = Object.keys(allSessions);
     for (var i = 0; i < ids.length; i++) {
       var s = allSessions[ids[i]];
       var rawKey = s.cwd0 ? projectKeyFromCwd(s.cwd0) : (s.dir && has(dirKey, s.dir) ? dirKey[s.dir] : (s.dir ? 'dir:' + s.dir : 'desconocido'));
       var key = alias(rawKey);
+      addUse(s, key);
       var lv = has(live, s.id) ? live[s.id] : null;
       var state = inferState(s, lv, now);
       var tokTotal = (s.tokens ? s.tokens.in + s.tokens.out + s.tokens.cr + s.tokens.cw : 0);
@@ -1641,7 +1892,8 @@
       }
       p.autoCategory = detectCategory(p.key, p.signals);
       if (!p.category) p.category = p.autoCategory;
-      p.progress = p.tasks.total ? p.tasks.completed / p.tasks.total : null;
+      p.flow = flowOf(p.category, p.stage, p.checks);
+      p.progress =p.tasks.total ? p.tasks.completed / p.tasks.total : null;
       var cur = null;
       p.sessions.forEach(function (id) {
         var sv3 = sessionMap[id];
@@ -1727,6 +1979,7 @@
       feed: feed,
       daily: series,
       hourly: hourly,
+      usage: buildUsage(useAcc, cfg, useLegacy),
       kpis: kpis
     };
   }
@@ -1740,6 +1993,13 @@
       if (!NF) NF = new Intl.NumberFormat('es-ES');
       return NF.format(n);
     } catch (e) { return String(n); }
+  }
+
+  // Dólares estimados: $0,42 · $12,30 · $1234 (coma decimal, sin céntimos desde $100)
+  function fmtUsd(n) {
+    n = +n || 0;
+    if (n > 0 && n < 0.005) return '<$0,01';
+    return '$' + (Math.abs(n) >= 100 ? fmtNum(Math.round(n)) : n.toFixed(2).replace('.', ','));
   }
 
   // 950 · 12,4K · 3,21M · 1,1B (coma decimal, como en español)
@@ -1909,6 +2169,9 @@
     HOT_WINDOW: HOT_WINDOW,
     CATEGORIES: CATEGORIES,
     STAGES: STAGES,
+    CHECKLISTS: CHECKLISTS,
+    validDay: validDay,
+    flowOf: flowOf,
     // utilidades
     toMs: toMs, trunc: trunc, normPath: normPath, baseName: baseName, shortPath: shortPath,
     projectKeyFromCwd: projectKeyFromCwd, originLabel: originLabel, describeTool: describeTool, waitPhrase: waitPhrase,
@@ -1921,8 +2184,10 @@
     // modelo
     defaultConfig: defaultConfig, normalizeConfig: normalizeConfig, buildModel: buildModel,
     inferState: inferState, sessionTitle: sessionTitle,
+    // consumo y precios
+    PRICES: PRICES, PRICES_CHECKED: PRICES_CHECKED, normModel: normModel, modelName: modelName, priceFor: priceFor, aggregateUsage: aggregateUsage,
     // formato
-    fmtNum: fmtNum, fmtTok: fmtTok, fmtDur: fmtDur, fmtAgo: fmtAgo, fmtDate: fmtDate, fmtTime: fmtTime,
+    fmtNum: fmtNum, fmtTok: fmtTok, fmtUsd: fmtUsd, fmtDur: fmtDur, fmtAgo: fmtAgo, fmtDate: fmtDate, fmtTime: fmtTime,
     esc: esc, renderMarkdown: renderMarkdown
   };
 });

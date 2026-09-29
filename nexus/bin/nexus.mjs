@@ -36,6 +36,8 @@ Consultas (sin abrir el navegador)
   status               Resumen: sesiones que te esperan, trabajando, tareas y planes pendientes
   tasks                Tareas abiertas de todos los proyectos
   projects             Lista de proyectos con su categoría, etapa y avance
+  usage                Consumo de tokens y coste estimado por proyecto, modelo y día
+    --days <n>         Periodo en días (por defecto 30); --todo para todo el historial
     --project <texto>  Filtra por nombre o ruta de proyecto
     --json             Salida en JSON (para scripts o para Claude)
     --all              Incluye tareas completadas o abandonadas (tasks)
@@ -45,6 +47,7 @@ Organización
                        dev | video | contenido | investigacion | ops | otros
     --etapa <nombre>   Etapa (p. ej. Guion, Edición, Publicado, Desarrollo, Deploy)
     --nombre <texto>   Nombre visible en el panel
+    --fecha <AAAA-MM-DD>  Fecha objetivo (p. ej. de publicación de un vídeo); «ninguna» la quita
     --proyecto <ruta>  Otra carpeta de proyecto en lugar de la actual
 
 Instalación
@@ -78,7 +81,7 @@ function parse(argv) {
   return out;
 }
 
-const VALUE_FLAGS = new Set(['port', 'claude-dir', 'project', 'proyecto', 'etapa', 'stage', 'nombre', 'name', 'dir', 'home']);
+const VALUE_FLAGS = new Set(['port', 'claude-dir', 'project', 'proyecto', 'etapa', 'stage', 'nombre', 'name', 'dir', 'home', 'days', 'fecha', 'due']);
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -350,6 +353,69 @@ async function cmdProjects(flags) {
   });
 }
 
+async function cmdUsage(flags) {
+  const { model: m } = await loadModel(flags);
+  const u = m.usage;
+  if (!u) {
+    console.error('El servidor en marcha es de una versión anterior y no calcula el consumo. Reinícialo: node bin/nexus.mjs stop && node bin/nexus.mjs open');
+    process.exitCode = 1;
+    return;
+  }
+  const days = flags.todo || flags.all ? 0 : Math.max(1, Math.floor(Number(flags.days) || 30));
+  const from = days ? core.dayKey(core.startOfDay(m.now) + 12 * 3600000 - (days - 1) * 86400000) : null;
+  let projects = null;
+  if (flags.project || flags.proyecto) {
+    const found = matchProject(m, flags.project || flags.proyecto);
+    if (!found || !found.length) {
+      console.error(`No encontré ningún proyecto que coincida con «${flags.project || flags.proyecto}».`);
+      process.exitCode = 1;
+      return;
+    }
+    projects = found.map((p) => p.key);
+  }
+  const agg = core.aggregateUsage(u, { from, projects });
+  const todayKey = core.dayKey(m.now);
+  const today = core.aggregateUsage(u, { from: todayKey, to: todayKey, projects });
+  const nameOf = (key) => (m.projectMap[key] ? m.projectMap[key].name : key);
+  const rec = (r) => ({ tokens: r.tokens, input: r.i, output: r.o, cacheRead: r.r, cacheWrite: r.w, costUsd: Math.round(r.cost * 1e4) / 1e4, unpricedTokens: r.unpriced });
+
+  if (flags.json) {
+    console.log(JSON.stringify({
+      generatedAt: m.now, from, days: days || null, estimate: true, pricesChecked: u.checked, legacySessions: u.legacy,
+      total: rec(agg.total), today: rec(today.total),
+      byModel: agg.byModel.map((r) => ({ model: r.model, name: core.modelName(r.model), priceUsdPerMTok: r.price, ...rec(r) })),
+      byProject: agg.byProject.map((r) => ({ project: nameOf(r.key), key: r.key, ...rec(r) })),
+      byDay: agg.byDay.map((r) => ({ day: r.day, ...rec(r) }))
+    }, null, 2));
+    return;
+  }
+
+  const cost = (r) => (!r.cost && r.unpriced ? '—' : core.fmtUsd(r.cost) + (r.unpriced ? '*' : ''));
+  const t = agg.total;
+  console.log(bold(cyan('NEXUS')) + dim(` · Consumo · ${days ? `últimos ${days} días` : 'todo el historial'}${projects ? ' · ' + projects.map(nameOf).join(', ') : ''}`));
+  if (!t.tokens) { console.log('Sin consumo en este periodo.'); return; }
+  const inputSide = t.i + t.r + t.w;
+  console.log(`${bold(cost(t))} estimados · ${core.fmtTok(t.tokens)} tokens · ${core.fmtTok(t.o)} de salida · caché ${inputSide ? Math.round((t.r / inputSide) * 100) : 0} % de la entrada`);
+  console.log(dim(`hoy ${cost(today.total)} · ${core.fmtTok(today.total.tokens)} tokens`));
+  console.log('');
+  console.log(bold('POR PROYECTO'));
+  agg.byProject.slice(0, 10).forEach((r) => console.log(`  ${nameOf(r.key).slice(0, 30).padEnd(31)} ${core.fmtTok(r.tokens).padStart(7)} ${cost(r).padStart(10)}`));
+  if (agg.byProject.length > 10) console.log(dim(`  … y ${agg.byProject.length - 10} proyectos más (--json para verlos todos)`));
+  console.log('');
+  console.log(bold('POR MODELO'));
+  agg.byModel.forEach((r) => {
+    const price = r.price ? `$${+r.price.in.toFixed(4)} / $${+r.price.out.toFixed(4)} por millón${r.price.custom ? ' (precio propio)' : ''}` : 'sin precio';
+    console.log(`  ${core.modelName(r.model).padEnd(16)} ${core.fmtTok(r.tokens).padStart(7)} ${cost(r).padStart(10)}  ${dim(price)}`);
+  });
+  console.log('');
+  console.log(bold('ÚLTIMOS DÍAS'));
+  agg.byDay.slice(-7).forEach((r) => console.log(`  ${r.day}  ${core.fmtTok(r.tokens).padStart(7)} ${cost(r).padStart(10)}`));
+  console.log('');
+  if (t.unpriced) console.log(dim(`* ${core.fmtTok(t.unpriced)} tokens de modelos sin precio no suman al coste (añade su precio en el panel, Ajustes).`));
+  if (u.legacy) console.log(dim(`${u.legacy} sesiones antiguas sin detalle por día ni modelo: se cuentan en su último día.`));
+  console.log(dim(`Estimación con precios de lista de la API (revisados el ${u.checked}); con una suscripción no pagas por token.`));
+}
+
 // ───────────────────────────────────────────────────────────── organización
 
 const CAT_ALIAS = {
@@ -409,16 +475,26 @@ async function cmdTag(flags, pos) {
   if (stage) cur.stage = String(stage);
   const name = flags.nombre || flags.name;
   if (name) cur.name = String(name);
-  if (!category && !stage && !name) {
+  const due = flags.fecha || flags.due;
+  if (due) {
+    if (/^(ninguna|no|-)$/i.test(String(due))) delete cur.due;
+    else if (core.validDay(String(due))) cur.due = String(due);
+    else {
+      console.error(`Fecha no válida: «${due}». Usa AAAA-MM-DD (por ejemplo 2026-10-05) o «ninguna» para quitarla.`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (!category && !stage && !name && !due) {
     console.log(`Proyecto: ${key}`);
     console.log(`Actual: ${JSON.stringify(cur)}`);
-    console.log('Indica una categoría, --etapa o --nombre para cambiarlo.');
+    console.log('Indica una categoría, --etapa, --nombre o --fecha para cambiarlo.');
     return;
   }
   cfg.projects[key] = cur;
   await writeConfig(flags, running, cfg);
   const catLabel = core.CATEGORIES.find((c) => c.id === cur.category);
-  console.log(`${mint('✓')} ${bold(cur.name || core.baseName(key))} → ${catLabel ? catLabel.label : 'categoría automática'}${cur.stage ? ' · etapa ' + cur.stage : ''}`);
+  console.log(`${mint('✓')} ${bold(cur.name || core.baseName(key))} → ${catLabel ? catLabel.label : 'categoría automática'}${cur.stage ? ' · etapa ' + cur.stage : ''}${cur.due ? ' · fecha objetivo ' + cur.due : ''}`);
   console.log(dim(`  ${key}`));
 }
 
@@ -610,6 +686,7 @@ async function main() {
     case 'status': return cmdStatus(flags);
     case 'tasks': case 'tareas': return cmdTasks(flags);
     case 'projects': case 'proyectos': return cmdProjects(flags);
+    case 'usage': case 'consumo': return cmdUsage(flags);
     case 'tag': case 'categoria': return cmdTag(flags, pos);
     case 'install': return cmdInstall(flags);
     case 'hooks': return cmdHooks(flags);

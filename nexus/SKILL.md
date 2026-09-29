@@ -1,6 +1,6 @@
 ---
 name: nexus
-description: NEXUS, el centro de mando para seguir todo lo que Claude Code hace en los proyectos del usuario (desarrollo, vídeos del canal, contenido…) con un panel cyberpunk local. Úsala cuando el usuario pida abrir el panel, dashboard, "mission control" o "centro de mando"; pregunte qué sesiones están trabajando o le esperan, qué tareas, tandas o planes hay pendientes, qué hizo Claude hoy o en un proyecto; o quiera clasificar un proyecto (por ejemplo como vídeo del canal) o fijar su etapa (Guion, Edición, Publicado, Deploy…).
+description: NEXUS, el centro de mando para seguir todo lo que Claude Code hace en los proyectos del usuario (desarrollo, vídeos del canal, contenido…) con un panel cyberpunk local. Úsala cuando el usuario pida abrir el panel, dashboard, "mission control" o "centro de mando"; pregunte qué sesiones están trabajando o le esperan, qué tareas, tandas o planes hay pendientes, qué hizo Claude hoy o en un proyecto, cuántos tokens o cuánto coste estimado llevan los proyectos; o quiera clasificar un proyecto (por ejemplo como vídeo del canal) o fijar su etapa (Guion, Edición, Publicado, Deploy…).
 ---
 
 # NEXUS · centro de mando de Claude Code
@@ -18,9 +18,11 @@ Todo se maneja con el CLI que acompaña a esta skill. Su ruta es `bin/nexus.mjs`
 | Estado de un proyecto concreto | `NEXUS status --project <nombre>` |
 | Lista completa de tareas abiertas | `NEXUS tasks` (añade `--project <nombre>` para filtrar) |
 | Lista de proyectos, categorías y etapas | `NEXUS projects` |
+| "¿Cuántos tokens he gastado?", coste por proyecto, modelo o día | `NEXUS usage` (`--days 7`, `--todo`, `--project <nombre>`; `--json` para procesarlo) |
 | Marcar el proyecto actual como vídeo, desarrollo, etc. | `NEXUS tag video` (categorías: dev, video, contenido, investigacion, ops, otros) |
 | Fijar la etapa del proyecto actual | `NEXUS tag video --etapa Edición` (o solo `--etapa Deploy`) |
 | Renombrar cómo se ve el proyecto | `NEXUS tag --nombre "Episodio 48"` |
+| Fijar la fecha objetivo (p. ej. de publicación de un vídeo) | `NEXUS tag --fecha 2026-10-05` (`--fecha ninguna` la quita). Se ve en la vista **Canal** del panel, junto a la lista de comprobación de cada etapa |
 | Crear un acceso directo en el escritorio (abrir el panel con doble clic) | `NEXUS shortcut` |
 | Quitar el acceso directo | `NEXUS shortcut --remove` |
 | Ver la demo | `NEXUS demo` |
@@ -37,6 +39,7 @@ Para procesar los datos tú mismo (por ejemplo, para planificar el día), usa `-
 - Luego lo que está en marcha (proyecto → qué está haciendo) y las tareas abiertas más relevantes. No pegues la salida completa del comando: resúmela.
 - Si `status` dice que el servidor no está en marcha, los datos siguen siendo válidos (se leen directamente de `~/.claude`). Ofrece `NEXUS open` si quiere el panel en vivo.
 - Las tareas "abandonadas" son tareas abiertas de sesiones cerradas hace días; no las cuentes como pendientes salvo que el usuario pregunte por ellas (`NEXUS tasks --all`).
+- El coste de `NEXUS usage` es una **estimación** a precios de lista de la API (no lo presentes como una factura): con una suscripción Pro/Max no se paga por token. Si aparecen tokens "sin precio", di que el modelo no tiene precio configurado (se añade en Ajustes del panel).
 
 ## Avisos instantáneos (opcional)
 

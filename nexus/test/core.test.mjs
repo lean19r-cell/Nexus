@@ -239,6 +239,57 @@ test('collector: conserva el historial cuando Claude Code borra archivos', async
   assert.equal(m.kpis.tasksOpen, 0);
 });
 
+test('parser: el consumo se guarda por hora y modelo, sin duplicar y contando subagentes', () => {
+  const f = entryFactory({ sessionId: 'u1' });
+  const side = entryFactory({ sessionId: 'u1', sidechain: true });
+  const use = (i, o, r, w) => ({ input_tokens: i, output_tokens: o, cache_read_input_tokens: r, cache_creation_input_tokens: w });
+  const s = core.createSessionState('u1');
+  ingestAll(s, [
+    f.prompt(T0, 'uno'),
+    // Dos líneas (thinking + texto) con el mismo message.id y usage: se cuenta una vez.
+    f.assistant(T0 + 1000, [{ type: 'thinking', thinking: '', signature: 'x' }, f.text('a')], { id: 'a', usage: use(10, 100, 1000, 50), stop: 'end_turn' }),
+    f.assistant(T0 + 2000, [f.text('b')], { id: 'b', model: 'claude-haiku-4-5', usage: use(10, 100, 1000, 50), stop: 'end_turn' }),
+    f.assistant(T0 + 3600000 + 5, [f.text('c')], { id: 'c', usage: use(10, 100, 1000, 50), stop: 'end_turn' })
+  ]);
+  ingestAll(s, [side.assistant(T0 + 3000, [side.text('s')], { id: 's', usage: use(1, 2, 3, 4), stop: 'end_turn' })], { sub: true });
+  const h = Math.floor(T0 / 3600000);
+  assert.deepEqual(s.use[h + '|claude-opus-5-5'], [11, 102, 1003, 54], 'el subagente suma a la hora y el modelo que usó');
+  assert.deepEqual(s.use[h + '|claude-haiku-4-5'], [10, 100, 1000, 50]);
+  assert.deepEqual(s.use[h + 1 + '|claude-opus-5-5'], [10, 100, 1000, 50], 'otra hora, otra entrada');
+  assert.equal(Object.keys(s.use).length, 3);
+  const sum = Object.values(s.use).reduce((a, v) => a.map((x, i) => x + v[i]), [0, 0, 0, 0]);
+  assert.deepEqual(sum, [s.tokens.in, s.tokens.out, s.tokens.cr, s.tokens.cw], 'el desglose cuadra con el total de la sesión');
+});
+
+test('collector: sesiones guardadas sin desglose de consumo se releen si su transcripción existe y se conservan si no', async () => {
+  const fs = memFS();
+  const dir = seedFS(fs);
+  const a = new core.Collector(fs, { now: fs.now });
+  await a.scan({ full: true });
+  const tokens = { ...a.sessions.s1.tokens };
+  assert.ok(Object.keys(a.sessions.s1.use).length > 0);
+  const index = JSON.parse(JSON.stringify(a.exportIndex()));
+  const legacy = JSON.parse(JSON.stringify(a.sessions));
+  delete legacy.s1.use; // como las guardó una versión anterior de NEXUS
+
+  // La transcripción sigue en disco: se relee entera y no se cuenta dos veces.
+  const b = new core.Collector(fs, { now: fs.now });
+  assert.equal(b.importState(structuredClone(index), structuredClone(legacy)), true);
+  const ch = await b.scan({ full: true });
+  assert.deepEqual(ch.rebuild, ['s1']);
+  assert.deepEqual(b.sessions.s1.tokens, tokens);
+  assert.deepEqual(b.sessions.s1.use, a.sessions.s1.use);
+
+  // La transcripción ya no existe (Claude Code la borró): la sesión se conserva tal cual.
+  fs.remove(`${dir}/s1.jsonl`);
+  const c = new core.Collector(fs, { now: fs.now });
+  assert.equal(c.importState(structuredClone(index), structuredClone(legacy)), true);
+  await c.scan({ full: true });
+  assert.equal(c.sessions.s1.archived, true);
+  assert.deepEqual(c.sessions.s1.tokens, tokens);
+  assert.equal(c.sessions.s1.use, undefined);
+});
+
 test('collector: exportar e importar el estado evita releer los archivos', async () => {
   const fs = memFS();
   seedFS(fs);
@@ -299,6 +350,129 @@ test('modelo: worktrees, alias, categorías, nombres repetidos y tareas abandona
   assert.equal(merged.sessions.length, 4);
   assert.equal(m.projectMap['/Users/demo/clientes/app'], undefined);
   assert.equal(m.projects[0].key, '/Users/demo/dev/app', 'los proyectos fijados van primero');
+});
+
+test('modelo: consumo por día, proyecto y modelo con coste estimado y precios propios', () => {
+  const use = (i, o, r, w) => ({ input_tokens: i, output_tokens: o, cache_read_input_tokens: r, cache_creation_input_tokens: w });
+  const mk = (id, cwd, t, model, usage) => {
+    const f = entryFactory({ sessionId: id, cwd });
+    const s = ingestAll(core.createSessionState(id), [f.prompt(t, 'hola'), f.assistant(t + 1000, [f.text('ok')], { id: 'x' + id, model, usage, stop: 'end_turn' })]);
+    return core.publicSession(s);
+  };
+  const dayOf = (t) => core.dayKey(Math.floor(t / 3600000) * 3600000 + 1800000);
+  const now = T0 + 10 * DAY;
+  const tA = now - 3600000;
+  const tOld = now - 3 * DAY;
+  const data = {
+    sessions: {
+      a: mk('a', '/Users/demo/dev/app', tA, 'claude-opus-5-5', use(1e6, 1e5, 0, 0)),
+      b: mk('b', '/Users/demo/dev/app/.claude/worktrees/x', tOld, 'claude-haiku-4-5-20251001', use(2e6, 0, 5e6, 0)),
+      c: mk('c', '/Users/demo/youtube/ep', tOld, 'modelo-inventado-1', use(100, 100, 0, 0))
+    },
+    taskLists: {}, plans: {}, live: {}
+  };
+  const m = core.buildModel(data, {}, now);
+  const u = m.usage;
+  assert.deepEqual(u.models, ['claude-haiku-4-5', 'claude-opus-5-5', 'modelo-inventado-1'], 'sin fecha en el id y ordenados por tokens');
+  assert.equal(u.legacy, 0);
+  assert.equal(u.prices[2], null, 'un modelo desconocido no tiene precio');
+
+  const all = core.aggregateUsage(u);
+  assert.equal(all.total.tokens, 1.1e6 + 7e6 + 200);
+  assert.equal(all.total.unpriced, 200, 'los tokens sin precio no entran en el coste');
+  assert.ok(Math.abs(all.total.cost - 8.5) < 1e-9, 'opus 4+2, haiku 2+0,5: ' + all.total.cost);
+  assert.deepEqual(all.byProject.map((p) => p.key), ['/Users/demo/dev/app', '/Users/demo/youtube/ep'], 'el worktree cuenta en su repositorio');
+  assert.ok(Math.abs(all.byProject[0].cost - 8.5) < 1e-9);
+  assert.equal(all.byDay.length, dayOf(tA) === dayOf(tOld) ? 1 : 2);
+  assert.deepEqual(all.byModel.map((x) => x.model), ['claude-haiku-4-5', 'claude-opus-5-5', 'modelo-inventado-1']);
+
+  const recent = core.aggregateUsage(u, { from: dayOf(tA) });
+  assert.equal(recent.total.tokens, 1.1e6);
+  assert.ok(Math.abs(recent.total.cost - 6) < 1e-9);
+  assert.equal(core.aggregateUsage(u, { project: '/Users/demo/youtube/ep' }).total.tokens, 200);
+  assert.equal(core.aggregateUsage(u, { model: 'claude-haiku-4-5' }).total.r, 5e6);
+  assert.equal(core.aggregateUsage(u, { to: '1999-01-01' }).total.tokens, 0);
+  assert.equal(core.aggregateUsage(null).total.tokens, 0);
+
+  // Precios propios: mandan sobre los de serie, valen para modelos desconocidos y la caché se deriva de la entrada.
+  const cfg = { prices: { 'claude-opus-5-5-20260101': { in: 1, out: 2 }, 'modelo-inventado-1': { in: 1, out: 1, cr: 0.5 } } };
+  const mine = core.buildModel(data, cfg, now).usage;
+  assert.equal(mine.prices[1].custom, true);
+  assert.equal(mine.prices[0].custom, false);
+  const priced = core.aggregateUsage(mine);
+  assert.equal(priced.total.unpriced, 0);
+  assert.ok(Math.abs(priced.byModel.find((x) => x.model === 'claude-opus-5-5').cost - 1.2) < 1e-9);
+  assert.ok(Math.abs(priced.byModel.find((x) => x.model === 'modelo-inventado-1').cost - 0.0002) < 1e-12);
+  assert.equal(core.priceFor('modelo-inventado-1', core.normalizeConfig(cfg).prices).cw, 1.25);
+});
+
+test('config: los precios no válidos se descartan y los ids se normalizan', () => {
+  const c = core.normalizeConfig({ prices: { 'claude-x-9-20260101': { in: '3', out: 15 }, malo: { in: -1, out: 2 }, peor: { in: 'abc', out: 1 }, sinsalida: { in: 1 }, nulo: null } });
+  assert.deepEqual(c.prices, { 'claude-x-9': { in: 3, out: 15 } });
+  assert.deepEqual(core.normalizeConfig(null).prices, {});
+  assert.equal(core.normModel('claude-opus-4-6[1m]'), 'claude-opus-4-6');
+  assert.equal(core.normModel('anthropic.claude-haiku-4-5-20251001-v1:0'), 'claude-haiku-4-5');
+  assert.equal(core.normModel('claude-opus-4-5@20251101'), 'claude-opus-4-5');
+  assert.equal(core.normModel(null), 'desconocido');
+});
+
+test('modelo: una sesión guardada sin desglose aporta su total al último día y modelo', () => {
+  const f = entryFactory({ sessionId: 'old' });
+  const t = T0 + 2 * DAY;
+  const s = ingestAll(core.createSessionState('old'), [f.prompt(t, 'x'), f.assistant(t + 1000, [f.text('ok')], { id: 'o1', stop: 'end_turn', usage: { input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })]);
+  const pub = core.publicSession(s);
+  delete pub.use;
+  const m = core.buildModel({ sessions: { old: pub }, taskLists: {}, plans: {}, live: {} }, {}, t + DAY);
+  assert.equal(m.usage.legacy, 1);
+  assert.equal(core.aggregateUsage(m.usage).total.tokens, 1000);
+  assert.deepEqual(m.usage.models, ['claude-opus-5-5']);
+});
+
+test('formato: dólares estimados', () => {
+  assert.deepEqual([0, 0.001, 0.5, 12.3].map(core.fmtUsd), ['$0,00', '<$0,01', '$0,50', '$12,30']);
+  assert.match(core.fmtUsd(1234.56), /^\$1\.?235$/);
+});
+
+test('flujo de vídeo: lista por etapa, fecha objetivo y datos no válidos', () => {
+  const mk = (id, cwd, t) => {
+    const f = entryFactory({ sessionId: id, cwd });
+    return core.publicSession(ingestAll(core.createSessionState(id), [f.prompt(t, 'hola'), f.assistant(t + 1000, [f.text('ok')], { id: 'x' + id, stop: 'end_turn' })]));
+  };
+  const now = T0 + DAY;
+  const data = {
+    sessions: { a: mk('a', '/Users/demo/youtube/ep-12', now - 3600000), b: mk('b', '/Users/demo/youtube/ep-13', now - 3600000), c: mk('c', '/Users/demo/dev/app', now - 3600000) },
+    taskLists: {}, plans: {}, live: {}
+  };
+  const cfg = {
+    projects: {
+      '/Users/demo/youtube/ep-12': { stage: 'Guion', due: '2026-10-05', checks: { 'guion-gancho': true, 'idea-tema': true, 'guion-escrito': false, ['x'.repeat(50)]: true, malo: 'sí' } },
+      '/Users/demo/youtube/ep-13': { stage: 'Edición', due: '2026-02-30', checks: 'nada' }
+    }
+  };
+  const m = core.buildModel(data, cfg, now);
+  const ep12 = m.projectMap['/Users/demo/youtube/ep-12'];
+  assert.equal(ep12.category, 'video');
+  assert.equal(ep12.due, '2026-10-05');
+  assert.deepEqual(ep12.checks, { 'guion-gancho': true, 'idea-tema': true }, 'solo se conservan marcas verdaderas y con id razonable');
+  assert.equal(ep12.flow.index, 1);
+  assert.deepEqual(ep12.flow.items.map((i) => [i.id, i.done]), [['guion-gancho', true], ['guion-escrito', false], ['guion-revisado', false]]);
+  assert.deepEqual(ep12.flow.stages.map((s) => [s.name, s.done, s.total]), [['Idea', 1, 3], ['Guion', 1, 3], ['Grabación', 0, 3], ['Edición', 0, 4], ['Miniatura', 0, 3], ['Publicado', 0, 3]]);
+  assert.equal(ep12.flow.done, 2);
+  assert.equal(ep12.flow.total, 19);
+
+  const ep13 = m.projectMap['/Users/demo/youtube/ep-13'];
+  assert.equal(ep13.due, null, 'el 30 de febrero no existe');
+  assert.deepEqual(ep13.checks, {});
+  assert.equal(ep13.flow.items.length, 4);
+  assert.equal(m.projectMap['/Users/demo/dev/app'].flow, null, 'solo el vídeo tiene lista de comprobación');
+
+  assert.deepEqual(core.flowOf('video', null, {}).items, []);
+  assert.equal(core.flowOf('video', null, {}).index, -1);
+  assert.equal(core.flowOf('dev', 'Deploy', {}), null);
+  assert.deepEqual(['2026-10-05', '2026-13-01', '2026-2-3', '', null, 20261005, '2024-02-29', '2025-02-29'].map(core.validDay), ['2026-10-05', null, null, null, null, null, '2024-02-29', null]);
+  // Cambiar la categoría a otra sin lista quita el flujo pero conserva lo guardado en la configuración.
+  const asOps = core.buildModel(data, { projects: { '/Users/demo/youtube/ep-12': { category: 'ops', stage: 'Diseño', due: '2026-10-05' } } }, now);
+  assert.equal(asOps.projectMap['/Users/demo/youtube/ep-12'].flow, null);
 });
 
 test('modelo: estado inferido sin registro vivo', () => {

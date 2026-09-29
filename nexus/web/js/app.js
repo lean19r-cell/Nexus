@@ -19,11 +19,15 @@
   var PREF_KEY = 'nexus.prefs.v1';
   var DEFAULT_PREFS = {
     fx: true, calm: false, toasts: true, notify: false, sound: false,
+    runsDone: true, tasksDone: true, soundDone: true,
     metric: 'tools', pcat: 'all', psort: 'activity', phidden: false,
     tview: 'board', trange: 'all', tsrc: 'all', tstale: false,
     rsrc: 'all', rst: 'all', rrange: '7',
     sst: 'all', ssort: 'updatedAt', sdir: -1,
-    plst: 'all', heatTable: false, actTable: false
+    plst: 'all', heatTable: false, actTable: false,
+    urange: '30', umetric: 'cost',
+    fview: 'board', fkind: 'all', frange: 'today',
+    cview: 'pipeline'
   };
 
   function loadPrefs() {
@@ -46,7 +50,7 @@
 
   // ───────────────────────────────────────────────────────────── estado
 
-  var VIEWS_OK = { overview: 1, projects: 1, project: 1, tasks: 1, plans: 1, runs: 1, sessions: 1, session: 1, settings: 1 };
+  var VIEWS_OK = { overview: 1, projects: 1, project: 1, tasks: 1, plans: 1, runs: 1, sessions: 1, session: 1, channel: 1, follow: 1, usage: 1, settings: 1 };
 
   var S = {
     source: null,
@@ -63,6 +67,8 @@
     expanded: {},
     prev: {},
     primed: false,
+    activeRuns: {},
+    taskSt: {},
     fresh: true,
     buffer: [],
     loading: false,
@@ -684,6 +690,7 @@
       '<div class="field"><label>Etapa</label><div class="stages">' + stages.map(function (st, i) {
         return '<button type="button" class="stage' + (i < curStage ? ' past' : i === curStage ? ' cur' : '') + '" data-act="stage" data-key="' + esc(key) + '" data-stage="' + esc(st) + '" aria-pressed="' + (i === curStage) + '"><i></i>' + esc(st) + '</button>';
       }).join('') + '</div></div>' +
+      (p.flow ? '<div class="field"><label>Lista de la etapa · fecha objetivo</label>' + flowEditor(p) + '</div>' : '') +
       '<div class="edit-row"><div class="field"><label for="pf-name">Nombre</label><input class="input" id="pf-name" data-cfg="name" data-key="' + esc(key) + '" value="' + esc(cfg.name || '') + '" placeholder="' + esc(C.baseName(key)) + '"></div>' +
       '<div class="field"><label for="pf-cat">Categoría</label>' + catSelect + '</div>' +
       '<div class="field"><label for="pf-alias">Unir con otro proyecto</label><select class="select" id="pf-alias" data-cfg="alias" data-key="' + esc(key) + '"><option value="">No unir</option>' +
@@ -955,6 +962,344 @@
 
   // ───────────────────────────────────────────────────────────── vista: ajustes
 
+  // ───────────────────────────────────────────────────────────── vista: canal (flujo de vídeos)
+
+  var WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+
+  function dayNoon(key) {
+    var p = key.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2], 12).getTime();
+  }
+
+  // Fecha objetivo de un vídeo respecto a hoy: { days, published, label, cls } (cls: late | soon | ok | '').
+  function dueInfo(p, now) {
+    if (!p.due) return null;
+    var days = Math.round((dayNoon(p.due) - (C.startOfDay(now) + 12 * 3600000)) / 86400000);
+    var stages = C.STAGES.video;
+    var published = p.stage === stages[stages.length - 1];
+    var rel = days === 0 ? 'hoy' : days === 1 ? 'mañana' : days === -1 ? 'ayer' : days > 0 ? 'en ' + days + ' días' : 'hace ' + (-days) + ' días';
+    return { days: days, published: published, label: fmtDay(dayNoon(p.due)) + ' · ' + rel, cls: published ? 'ok' : days < 0 ? 'late' : days <= 2 ? 'soon' : '' };
+  }
+
+  function dueBadge(p, now) {
+    var d = dueInfo(p, now);
+    return d ? '<span class="due ' + d.cls + '" title="Fecha objetivo">' + (d.published ? '✓ ' : d.days < 0 ? '⚠ ' : '') + esc(d.label) + '</span>' : '';
+  }
+
+  // Lista de comprobación de la etapa actual, fecha objetivo y botones para cambiar de etapa.
+  function flowEditor(p) {
+    var f = p.flow;
+    if (!f) return '';
+    var stages = C.STAGES[p.category];
+    var key = esc(p.key);
+    var idx = f.index;
+    var cur = idx >= 0 ? f.stages[idx] : null;
+    var items = f.items.map(function (it) {
+      return '<label class="chk' + (it.done ? ' done' : '') + '"><input type="checkbox" id="chk-' + hashStr(p.key + it.id) + '" data-cfg="check" data-key="' + key + '" data-item="' + esc(it.id) + '"' + (it.done ? ' checked' : '') + '><span>' + esc(it.label) + '</span></label>';
+    }).join('');
+    var ready = f.items.length > 0 && f.items.every(function (i) { return i.done; });
+    var prev = idx > 0 ? '<button class="btn small ghost" type="button" data-act="stage-step" data-key="' + key + '" data-dir="-1">◂ ' + esc(stages[idx - 1]) + '</button>' : '';
+    var next = idx < stages.length - 1 ? '<button class="btn small' + (ready ? ' primary' : '') + '" type="button" data-act="stage-step" data-key="' + key + '" data-dir="1">' + (idx < 0 ? 'Empezar: ' : '') + esc(stages[idx + 1]) + ' ▸</button>' : '';
+    return '<div class="flow">' +
+      (cur ? '<div class="flow-h"><b>' + esc(stages[idx]) + '</b><span class="dim mono">' + cur.done + '/' + cur.total + '</span></div><div class="chks">' + items + '</div>'
+        : '<p class="dim" style="margin:0;font-size:13px">Elige una etapa para ver su lista de comprobación.</p>') +
+      '<div class="flow-f"><label class="due-f">Fecha objetivo <input class="input" type="date" id="due-' + hashStr(p.key) + '" data-cfg="due" data-key="' + key + '" value="' + esc(p.due || '') + '"></label>' +
+      '<span class="sp"></span>' + prev + next + '</div></div>';
+  }
+
+  function videoCard(p, now) {
+    var f = p.flow;
+    var cur = f.index >= 0 ? f.stages[f.index] : null;
+    var open = !!S.expanded['vid-' + p.key];
+    var live = p.status === 'working' || p.status === 'waiting';
+    return '<article class="tcard vcard' + (open ? ' open' : '') + '" data-key="vc-' + esc(p.key) + '">' +
+      '<div class="vtop">' + (live ? orb(p.status) : '') + '<a class="subj" href="' + hrefProject(p.key) + '">' + esc(p.name) + '</a></div>' +
+      (p.current ? '<div class="af">▸ ' + esc(C.trunc(p.current.x, 100)) + '</div>' : '') +
+      (cur && cur.total ? progress(cur.done, cur.total) : '') +
+      '<div class="foot">' + dueBadge(p, now) + '<button class="toggle t" type="button" data-act="run" data-id="vid-' + esc(p.key) + '" aria-expanded="' + open + '">' + (open ? 'Ocultar' : 'Lista') + '</button></div>' +
+      (open ? flowEditor(p) : '') + '</article>';
+  }
+
+  // Cinco semanas desde el lunes de esta semana con las fechas objetivo; lo vencido y lo lejano van en listas aparte.
+  function channelCalendar(videos, now) {
+    var noon = C.startOfDay(now) + 12 * 3600000;
+    var mon = noon - ((new Date(noon).getDay() + 6) % 7) * 86400000;
+    var todayKey = C.dayKey(now);
+    var lastKey = C.dayKey(mon + 34 * 86400000);
+    var open = videos.filter(function (p) { var d = dueInfo(p, now); return d && !d.published; });
+    var byDay = {};
+    videos.forEach(function (p) { if (p.due) (byDay[p.due] = byDay[p.due] || []).push(p); });
+    var cells = '';
+    for (var i = 0; i < 35; i++) {
+      var t = mon + i * 86400000;
+      var d = new Date(t);
+      var key = C.dayKey(t);
+      cells += '<div class="cal-d' + (key === todayKey ? ' today' : key < todayKey ? ' past' : '') + '"><span class="n">' + d.getDate() + (d.getDate() === 1 || i === 0 ? ' <small>' + MONTHS[d.getMonth()] + '</small>' : '') + '</span>' +
+        (byDay[key] || []).map(function (p) {
+          return '<a class="cal-v ' + dueInfo(p, now).cls + '" href="' + hrefProject(p.key) + '" title="' + esc(p.name + ' · ' + (p.stage || 'sin etapa')) + '">' + esc(p.name) + '</a>';
+        }).join('') + '</div>';
+    }
+    var line = function (p) {
+      return '<a class="row" href="' + hrefProject(p.key) + '" data-key="cv-' + esc(p.key) + '"><div class="grow"><div class="line1">' + esc(p.name) + '</div><div class="line2">' + esc(p.stage || 'Sin etapa') + '</div></div>' + dueBadge(p, now) + '</a>';
+    };
+    var late = open.filter(function (p) { return p.due < todayKey; }).sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    var later = open.filter(function (p) { return p.due > lastKey; }).sort(function (a, b) { return a.due < b.due ? -1 : 1; });
+    return (late.length ? '<section class="panel"><div class="panel-h"><h2>Vencidos</h2><div class="meta">' + late.length + '</div></div><div class="panel-b flush rows">' + late.map(line).join('') + '</div></section>' : '') +
+      '<section class="panel"><div class="panel-h"><h2>Próximas cinco semanas</h2><div class="meta">' + plural(videos.filter(function (p) { return p.due && p.due >= C.dayKey(mon) && p.due <= lastKey; }).length, 'fecha', 'fechas') + '</div></div><div class="panel-b">' +
+      '<div class="cal" role="grid" aria-label="Fechas objetivo de los vídeos">' + WEEKDAYS.map(function (w) { return '<div class="cal-h" role="columnheader">' + w + '</div>'; }).join('') + cells + '</div>' +
+      (videos.some(function (p) { return p.due; }) ? '' : '<p class="dim" style="margin:12px 0 0;font-size:13px">Ninguna fecha todavía: ponla en la lista de un vídeo (vista Pipeline → Lista) o en su ficha.</p>') + '</div></section>' +
+      (later.length ? '<section class="panel"><div class="panel-h"><h2>Más adelante</h2><div class="meta">' + later.length + '</div></div><div class="panel-b flush rows">' + later.map(line).join('') + '</div></section>' : '');
+  }
+
+  function vChannel(m) {
+    var q = (S.t.q.channel || '').toLowerCase().trim();
+    var all = m.projects.filter(function (p) { return p.category === 'video' && !p.hidden && p.flow; });
+    var videos = all.filter(function (p) { return !q || (p.name + ' ' + (p.notes || '')).toLowerCase().indexOf(q) >= 0; });
+    var stages = C.STAGES.video;
+    var head = function (lede) { return pageHead('Ca<span class="accent">nal</span>', lede); };
+    if (!all.length) {
+      return '<div class="page power-on">' + head('Pipeline de tus vídeos: etapa, lista de comprobación y fecha objetivo de cada uno.') +
+        '<div class="panel">' + empty('Todavía no hay proyectos de vídeo. NEXUS los detecta por el nombre de la carpeta (youtube, canal, video, shorts, guion, miniatura…) o si Claude usa ffmpeg, whisper o yt-dlp; también puedes cambiar la categoría de un proyecto a «Video / Canal» en su ficha.') + '</div></div>';
+    }
+    var now = m.now;
+    var todayKey = C.dayKey(now);
+    var byDue = function (a, b) { return (a.due ? 0 : 1) - (b.due ? 0 : 1) || (a.due < b.due ? -1 : a.due > b.due ? 1 : 0) || b.lastActivity - a.lastActivity; };
+    var late = all.filter(function (p) { var d = dueInfo(p, now); return d && !d.published && d.days < 0; }).length;
+    var next = all.filter(function (p) { var d = dueInfo(p, now); return d && !d.published && d.days >= 0; }).sort(byDue)[0];
+    var working = all.filter(function (p) { return p.status === 'working' || p.status === 'waiting'; }).length;
+    var lede = '<b>' + all.length + '</b> vídeos · <b>' + working + '</b> con Claude trabajando' +
+      (late ? ' · <b style="color:var(--red)">' + late + '</b> ' + (late === 1 ? 'vencido' : 'vencidos') : '') +
+      (next ? ' · próxima entrega: <b>' + esc(next.name) + '</b> (' + esc(dueInfo(next, now).label) + ')' : '');
+    var toolbar = searchBox('channel', 'Buscar un vídeo') + seg('cview', [['pipeline', 'Pipeline'], ['calendar', 'Calendario']], S.p.cview, 'Vista');
+    var body;
+    if (S.p.cview === 'calendar') {
+      body = '<div class="stack">' + channelCalendar(videos, now) + '</div>';
+    } else {
+      var cols = stages.map(function (name) { return { name: name, list: [] }; });
+      var noStage = { name: 'Sin etapa', list: [] };
+      videos.forEach(function (p) {
+        var i = stages.indexOf(p.stage);
+        (i >= 0 ? cols[i] : noStage).list.push(p);
+      });
+      if (noStage.list.length) cols.unshift(noStage);
+      body = '<div class="kanban kv" style="--n:' + cols.length + '">' + cols.map(function (c, i) {
+        var list = c.list.slice().sort(byDue);
+        var lim = limit('vcol-' + c.name, 8);
+        var cls = c.name === 'Sin etapa' ? 'pending' : c.name === stages[stages.length - 1] ? 'completed' : '';
+        return '<section class="panel col ' + cls + '"><div class="panel-h"><h2>' + esc(c.name) + '</h2><div class="meta">' + list.length + '</div></div>' +
+          '<div class="tcards">' + (list.length ? list.slice(0, lim).map(function (p) { return videoCard(p, now); }).join('') + moreBtn('vcol-' + c.name, lim, list.length, 8) : '<div class="empty" style="padding:14px 6px">Nada aquí.</div>') + '</div></section>';
+      }).join('') + '</div>';
+    }
+    return '<div class="page power-on">' + head(lede) + '<div class="toolbar">' + toolbar + '</div>' + (videos.length ? body : '<div class="panel">' + empty('Ningún vídeo coincide con la búsqueda.') + '</div>') + '</div>';
+  }
+
+  // ───────────────────────────────────────────────────────────── vista: seguimiento
+
+  // Tandas y tareas juntas, por estado: te esperan · en curso · pendientes · terminadas · con problemas.
+  var FOLLOW_COLS = [['wait', 'Te esperan'], ['in_progress', 'En curso'], ['pending', 'Pendientes'], ['completed', 'Terminadas'], ['problem', 'Con problemas']];
+
+  function followItems(m) {
+    var q = (S.t.q.follow || '').toLowerCase().trim();
+    var proj = S.t.proj.follow || '';
+    var kind = S.p.fkind;
+    var from = since(S.p.frange, m.now);
+    var items = [];
+    var keep = function (key, text) { return (!proj || key === proj) && (!q || (text + ' ' + projName(key)).toLowerCase().indexOf(q) >= 0); };
+    if (kind !== 'task') {
+      m.runs.forEach(function (r) {
+        var st = runStatus(r);
+        var col = st === 'wait' ? 'wait' : st === 'run' ? 'in_progress' : st === 'ok' ? 'completed' : 'problem';
+        var t = r.e || r.t;
+        if ((col === 'completed' || col === 'problem') && from && t < from) return;
+        if (keep(r.key, r.p + ' ' + (r.res || ''))) items.push({ kind: 'run', col: col, t: t, key: r.key, r: r });
+      });
+    }
+    if (kind !== 'run') {
+      m.tasks.forEach(function (tk) {
+        if (tk.stale) return;
+        var col = tk.status === 'completed' ? 'completed' : tk.status === 'in_progress' ? 'in_progress' : 'pending';
+        var t = col === 'completed' ? (tk.completedAt || tk.updated) : tk.updated;
+        if (col === 'completed' && from && t < from) return;
+        if (keep(tk.key, tk.subject + ' ' + (tk.description || ''))) items.push({ kind: 'task', col: col, t: t, key: tk.key, tk: tk });
+      });
+    }
+    return items;
+  }
+
+  function followCard(it) {
+    var chipHtml = chip(projCat(it.key), projName(it.key));
+    if (it.kind === 'task') {
+      var tk = it.tk;
+      return '<a class="tcard' + (tk.status === 'completed' ? ' done' : '') + (tk.blocked ? ' is-blocked' : '') + '" href="' + (tk.sessionId ? hrefSession(tk.sessionId) : hrefProject(tk.key)) + '" data-key="fk-' + esc(tk.uid) + '">' +
+        '<div class="subj">' + esc(tk.subject) + '</div>' +
+        (tk.status === 'in_progress' && tk.activeForm ? '<div class="af">▸ ' + esc(tk.activeForm) + '</div>' : '') +
+        (tk.blocked ? '<div class="blk">Espera a ' + esc(tk.blockedBy.map(function (x) { return '#' + x; }).join(', ')) + '</div>' : '') +
+        '<div class="foot">' + chipHtml + '<span class="tag k-task">TAREA</span><span class="t">' + esc(ago(it.t)) + '</span></div></a>';
+    }
+    var r = it.r;
+    var st = runStatus(r);
+    var s = S.model.sessionMap[r.sessionId];
+    var live = st === 'run' || st === 'wait';
+    var line = st === 'wait' ? waitText(s && s.waitingFor) : st === 'run' && s ? sessionNow(s) : (r.res || '');
+    return '<a class="tcard' + (st === 'ok' ? ' done' : '') + '" href="' + hrefSession(r.sessionId) + '" data-key="fk-' + esc(r.id) + '">' +
+      '<div class="subj clamp">' + esc(r.p) + '</div>' +
+      (line ? '<div class="' + (live ? 'af' : 'sum') + '">' + (live ? '▸ ' : '') + esc(C.trunc(line, 140)) + '</div>' : '') +
+      (r.err ? '<div class="blk bad">' + plural(r.err, 'error', 'errores') + '</div>' : st === 'int' ? '<div class="blk">Interrumpida</div>' : '') +
+      '<div class="foot">' + chipHtml + '<span class="tag k-run">TANDA</span><span class="mono">' + esc(C.fmtDur(Math.max(0, (r.e || r.t) - r.t))) + ' · ' + r.tools + ' herr.</span><span class="t">' + esc(ago(it.t)) + '</span></div></a>';
+  }
+
+  function vFollow(m) {
+    var proj = S.t.proj.follow || '';
+    var items = followItems(m);
+    var cols = {};
+    FOLLOW_COLS.forEach(function (c) { cols[c[0]] = []; });
+    items.forEach(function (it) { cols[it.col].push(it); });
+    var rank = function (it) { return it.kind === 'run' ? 0 : it.tk.blocked ? 2 : 1; };
+    FOLLOW_COLS.forEach(function (c) {
+      cols[c[0]].sort(function (a, b) {
+        if (c[0] === 'pending' || c[0] === 'in_progress') { var d = rank(a) - rank(b); if (d) return d; }
+        return b.t - a.t;
+      });
+    });
+    var n = function (c) { return cols[c].length; };
+    var range = { today: 'hoy', '7': 'en 7 días', '30': 'en 30 días', all: 'en total' }[S.p.frange];
+    var toolbar = searchBox('follow', 'Buscar en tandas y tareas') + projectSelect('follow', proj) +
+      seg('fview', [['board', 'Tablero'], ['projects', 'Por proyecto']], S.p.fview, 'Vista') +
+      seg('fkind', [['all', 'Todo'], ['run', 'Tandas'], ['task', 'Tareas']], S.p.fkind, 'Tipo') +
+      seg('frange', [['today', 'Hoy'], ['7', '7 días'], ['30', '30 días'], ['all', 'Siempre']], S.p.frange, 'Terminadas y con problemas');
+    var body;
+    if (S.p.fview === 'projects') {
+      var byProject = {};
+      items.forEach(function (it) {
+        var rec = byProject[it.key] || (byProject[it.key] = { key: it.key, wait: 0, in_progress: 0, pending: 0, completed: 0, problem: 0 });
+        rec[it.col]++;
+      });
+      var rows = Object.keys(byProject).map(function (k) { return byProject[k]; }).sort(function (a, b) {
+        return (b.wait - a.wait) || (b.in_progress - a.in_progress) || (b.pending - a.pending) || projName(a.key).localeCompare(projName(b.key), 'es');
+      });
+      var cell = function (v, c) { return '<td class="n">' + (v ? '<span class="cnt ' + c + '">' + v + '</span>' : '<span class="dim">·</span>') + '</td>'; };
+      body = '<section class="panel"><div class="panel-b flush tablewrap"><table class="grid"><thead><tr><th>Proyecto</th>' +
+        FOLLOW_COLS.map(function (c) { return '<th class="n">' + c[1] + '</th>'; }).join('') + '<th></th></tr></thead><tbody>' +
+        (rows.length ? rows.map(function (r) {
+          var p = m.projectMap[r.key];
+          return '<tr data-href="' + hrefProject(r.key) + '" data-key="fp-' + esc(r.key) + '"><td class="ttl"><div>' + chip(projCat(r.key)) + ' <a href="' + hrefProject(r.key) + '" style="color:var(--ice)">' + esc(projName(r.key)) + '</a></div>' +
+            (p && p.current ? '<small>▸ ' + esc(C.trunc(p.current.x, 90)) + '</small>' : '') + '</td>' +
+            cell(r.wait, 'wait') + cell(r.in_progress, 'in_progress') + cell(r.pending, 'pending') + cell(r.completed, 'completed') + cell(r.problem, 'problem') +
+            '<td class="n"><button class="btn small ghost" type="button" data-act="follow-proj" data-key="' + esc(r.key) + '">Tablero</button></td></tr>';
+        }).join('') : '<tr><td colspan="7">' + empty('Nada con estos filtros.') + '</td></tr>') + '</tbody></table></div></section>';
+    } else {
+      body = '<div class="kanban k5">' + FOLLOW_COLS.map(function (c) {
+        var list = cols[c[0]];
+        var lim = limit('fcol-' + c[0], 30);
+        return '<section class="panel col ' + c[0] + '"><div class="panel-h"><h2>' + c[1] + '</h2><div class="meta">' + list.length + '</div></div>' +
+          '<div class="tcards">' + (list.length ? list.slice(0, lim).map(followCard).join('') + moreBtn('fcol-' + c[0], lim, list.length, 30) : '<div class="empty" style="padding:14px 6px">Nada aquí.</div>') + '</div></section>';
+      }).join('') + '</div>';
+    }
+    return '<div class="page power-on">' +
+      pageHead('Segui<span class="accent">miento</span>', (n('wait') ? '<b>' + n('wait') + '</b> te esperan · ' : '') + '<b>' + n('in_progress') + '</b> en curso · <b>' + n('pending') + '</b> pendientes · <b>' + n('completed') + '</b> terminadas ' + range + ' · <b>' + n('problem') + '</b> con problemas. Tandas y tareas juntas, por estado.') +
+      '<div class="toolbar">' + toolbar + '</div>' + body + '</div>';
+  }
+
+  // ───────────────────────────────────────────────────────────── vista: consumo
+
+  var modelName = C.modelName;
+
+  function fmtPrice(n) { return String(+(+n).toFixed(4)).replace('.', ','); }
+
+  // Barras del consumo por día (o por semana cuando el periodo pasa de 120 días).
+  function usageBars(agg, range, now, metric) {
+    var today = C.startOfDay(now) + 12 * 3600000;
+    var first = range === 'all' ? (agg.byDay.length ? dayNoon(agg.byDay[0].day) : today) : today - (+range - 1) * 86400000;
+    var step = Math.round((today - first) / 86400000) + 1 > 120 ? 7 : 1;
+    if (step === 7) first -= ((new Date(first).getDay() + 6) % 7) * 86400000; // la semana empieza el lunes
+    var nb = Math.ceil((Math.round((today - first) / 86400000) + 1) / step);
+    var bins = [];
+    for (var i = 0; i < nb; i++) {
+      var t0 = first + i * step * 86400000;
+      var d = new Date(t0);
+      bins.push({
+        cost: 0, tokens: 0, cur: i === nb - 1,
+        label: step === 7 || d.getDate() === 1 ? d.getDate() + ' ' + MONTHS[d.getMonth()] : String(d.getDate()),
+        tip: (step === 7 ? 'Semana del ' : '') + fmtDay(t0)
+      });
+    }
+    agg.byDay.forEach(function (r) {
+      var idx = Math.floor(Math.round((dayNoon(r.day) - first) / 86400000) / step);
+      if (idx >= 0 && idx < nb) { bins[idx].cost += r.cost; bins[idx].tokens += r.tokens; }
+    });
+    bins.forEach(function (b) { b.v = metric === 'cost' ? b.cost : b.tokens; });
+    return { bins: bins, weekly: step === 7 };
+  }
+
+  function vUsage(m) {
+    var u = m.usage;
+    var proj = S.t.proj.usage || '';
+    var range = S.p.urange;
+    var metric = S.p.umetric === 'tokens' ? 'tokens' : 'cost';
+    var todayKey = C.dayKey(m.now);
+    var span = range === 'all' ? 0 : +range;
+    var from = span ? C.dayKey(C.startOfDay(m.now) + 12 * 3600000 - (span - 1) * 86400000) : null;
+    var agg = C.aggregateUsage(u, { from: from, project: proj || null });
+    var today = C.aggregateUsage(u, { from: todayKey, to: todayKey, project: proj || null });
+    var toolbar = projectSelect('usage', proj) +
+      seg('urange', [['7', '7 días'], ['30', '30 días'], ['90', '90 días'], ['all', 'Todo']], range, 'Periodo') +
+      seg('umetric', [['cost', 'Coste'], ['tokens', 'Tokens']], metric, 'Métrica');
+    var head = pageHead('Con<span class="accent">sumo</span>', 'Tokens que gasta Claude Code y su coste <b>estimado</b> a precios de lista de la API. Con una suscripción no pagas por token: úsalo como medida de esfuerzo.');
+    if (!u.rows.length) {
+      return '<div class="page power-on">' + head + '<div class="panel">' + empty('Todavía no hay consumo registrado. Aparece en cuanto Claude Code responde en alguna sesión.') + '</div></div>';
+    }
+
+    var tot = agg.total;
+    var todayNoon = C.startOfDay(m.now) + 12 * 3600000;
+    var days = span || Math.max(1, Math.round((todayNoon - (agg.byDay.length ? dayNoon(agg.byDay[0].day) : todayNoon)) / 86400000) + 1);
+    var cost = function (v, unpriced, tokens) { return !v && unpriced && tokens ? '—' : C.fmtUsd(v); };
+    var inputSide = tot.i + tot.r + tot.w;
+    var top = agg.byModel[0];
+    var tiles = [
+      '<div class="panel kpi"><div class="kpi-label">Coste estimado</div><div class="kpi-value">' + esc(cost(tot.cost, tot.unpriced, tot.tokens)) + '</div><div class="kpi-sub"><b>' + esc(C.fmtUsd(today.total.cost)) + '</b> hoy · <b>' + esc(C.fmtUsd(tot.cost / days)) + '</b> por día</div></div>',
+      '<div class="panel kpi"><div class="kpi-label">Tokens</div><div class="kpi-value">' + esc(C.fmtTok(tot.tokens)) + '</div><div class="kpi-sub"><b>' + esc(C.fmtTok(today.total.tokens)) + '</b> hoy · <b>' + esc(C.fmtTok(tot.o)) + '</b> de salida</div></div>',
+      '<div class="panel kpi"><div class="kpi-label">Caché</div><div class="kpi-value">' + (inputSide ? Math.round((tot.r / inputSide) * 100) + ' %' : '—') + '</div><div class="kpi-sub">de la entrada se lee de caché</div></div>',
+      '<div class="panel kpi"><div class="kpi-label">Modelo principal</div><div class="kpi-value" style="font-size:26px">' + (top ? esc(modelName(top.model)) : '—') + '</div><div class="kpi-sub">' + (top && tot.tokens ? '<b>' + Math.round((top.tokens / tot.tokens) * 100) + ' %</b> de los tokens' : '') + '</div></div>'
+    ].join('');
+
+    var series = usageBars(agg, range, m.now, metric);
+    var fmtV = metric === 'cost' ? C.fmtUsd : C.fmtTok;
+    var chart = columns('usage-bars', series.bins, { h: 200, fmt: fmtV, tip: function (v) { return metric === 'cost' ? C.fmtUsd(v) : C.fmtTok(v) + ' tokens'; }, aria: (metric === 'cost' ? 'Coste estimado' : 'Tokens') + (series.weekly ? ' por semana' : ' por día') });
+
+    var costCell = function (r) {
+      if (!r.cost && r.unpriced) return '<span class="dim" title="Modelo sin precio: añádelo en Ajustes">—</span>';
+      return esc(C.fmtUsd(r.cost)) + (r.unpriced ? '<span class="dim" title="Incluye tokens de modelos sin precio, que no suman">*</span>' : '');
+    };
+    var lim = limit('uproj', 15);
+    var projRows = agg.byProject.slice(0, lim).map(function (r) {
+      return '<tr data-href="' + hrefProject(r.key) + '" data-key="up-' + esc(r.key) + '"><td class="ttl"><div>' + chip(projCat(r.key)) + ' <a href="' + hrefProject(r.key) + '" style="color:var(--ice)">' + esc(projName(r.key)) + '</a></div></td>' +
+        '<td class="n">' + esc(C.fmtTok(r.tokens)) + '</td><td class="n">' + esc(C.fmtTok(r.o)) + '</td><td class="n">' + costCell(r) + '</td></tr>';
+    }).join('');
+    var modelRows = agg.byModel.map(function (r) {
+      var pr = r.price;
+      return '<tr data-key="um-' + esc(r.model) + '"><td class="ttl"><div>' + esc(modelName(r.model)) + '</div><small>' + esc(r.model) + '</small></td>' +
+        '<td class="n">' + esc(C.fmtTok(r.tokens)) + '</td><td class="n">' + costCell(r) + '</td>' +
+        '<td class="n">' + (pr ? '$' + fmtPrice(pr.in) + ' / $' + fmtPrice(pr.out) + (pr.custom ? ' <span class="tag">propio</span>' : '') : '<a class="tag" href="#/settings">sin precio</a>') + '</td></tr>';
+    }).join('');
+
+    var notes = '<p class="dim" style="font-size:12px;margin:0">Coste = tokens × precio de lista de la API por millón (entrada, salida, lectura y escritura de caché de 5 min), revisado el <span class="mono">' + esc(u.checked) + '</span>. No incluye descuentos, caché de 1 h ni impuestos. Puedes corregir los precios en <a href="#/settings">Ajustes</a>.</p>' +
+      (tot.unpriced ? '<p class="dim" style="font-size:12px;margin:8px 0 0">* ' + esc(C.fmtTok(tot.unpriced)) + ' tokens de modelos sin precio no suman al coste.</p>' : '') +
+      (u.legacy ? '<p class="dim" style="font-size:12px;margin:8px 0 0">' + plural(u.legacy, 'sesión antigua', 'sesiones antiguas') + ' sin detalle por día ni modelo (su transcripción ya no existe): su consumo se cuenta en su último día y modelo.</p>' : '');
+
+    return '<div class="page power-on">' + head + '<div class="toolbar">' + toolbar + '</div>' +
+      '<div class="kpis k4">' + tiles + '</div>' +
+      '<section class="panel"><div class="panel-h"><h2>' + (series.weekly ? 'Consumo semanal' : 'Consumo diario') + '</h2><div class="meta">' + esc(metric === 'cost' ? 'USD estimados' : 'tokens') + '</div></div><div class="panel-b">' + chart + '</div></section>' +
+      '<div class="detail-grid"><div class="stack">' +
+      '<section class="panel"><div class="panel-h"><h2>Por proyecto</h2><div class="meta">' + agg.byProject.length + '</div></div><div class="panel-b flush tablewrap"><table class="grid"><thead><tr><th>Proyecto</th><th class="n">Tokens</th><th class="n">Salida</th><th class="n">Coste</th></tr></thead><tbody>' +
+      (projRows || '<tr><td colspan="4">' + empty('Nada en este periodo.') + '</td></tr>') + '</tbody></table></div></section>' +
+      moreBtn('uproj', lim, agg.byProject.length, 15) +
+      '</div><div class="stack">' +
+      '<section class="panel"><div class="panel-h"><h2>Por modelo</h2><div class="meta">USD por millón de tokens</div></div><div class="panel-b flush tablewrap"><table class="grid"><thead><tr><th>Modelo</th><th class="n">Tokens</th><th class="n">Coste</th><th class="n">Entrada / salida</th></tr></thead><tbody>' +
+      (modelRows || '<tr><td colspan="4">' + empty('Nada en este periodo.') + '</td></tr>') + '</tbody></table></div></section>' +
+      '<section class="panel"><div class="panel-b">' + notes + '</div></section>' +
+      '</div></div></div>';
+  }
+
   function vSettings(m) {
     var meta = S.data.meta || {};
     var src = S.source === 'server' ? 'Servidor local' + (S.server ? ' · v' + esc(S.server.version) : '') : S.source === 'folder' ? 'Carpeta en el navegador' : 'Demo';
@@ -980,6 +1325,19 @@
         '<td style="text-align:center"><input type="checkbox" id="cfgh-' + hashStr(p.key) + '" data-cfg="hidden" data-key="' + esc(p.key) + '" aria-label="Ocultar ' + esc(p.name) + '"' + (p.hidden ? ' checked' : '') + '></td></tr>';
     }).join('');
     var aliases = Object.keys(S.config.aliases || {});
+    var priceModels = m.usage.models.filter(function (id) { return id !== 'desconocido'; });
+    Object.keys(S.config.prices || {}).forEach(function (id) { if (priceModels.indexOf(id) < 0) priceModels.push(id); });
+    var priceRows = priceModels.map(function (id) {
+      var pr = C.priceFor(id, S.config.prices);
+      var custom = !!(S.config.prices && S.config.prices[id]);
+      var listed = !!C.PRICES[id];
+      var field = function (pf, label) {
+        return '<td class="n"><input class="input num" type="number" min="0" step="any" id="pr-' + hashStr(id + pf) + '" data-cfg="price" data-key="' + esc(id) + '" data-pf="' + pf + '" value="' + (pr ? +pr[pf].toFixed(4) : '') + '" placeholder="—" aria-label="' + esc(label + ' de ' + id) + '"></td>';
+      };
+      return '<tr data-key="price-' + esc(id) + '"><td class="ttl"><div class="mono">' + esc(id) + '</div><small>' + (custom ? 'precio propio' : listed ? 'precio de lista' : 'sin precio') + '</small></td>' +
+        field('in', 'Entrada') + field('out', 'Salida') + field('cr', 'Lectura de caché') + field('cw', 'Escritura de caché') +
+        '<td class="n">' + (custom ? '<button class="btn small ghost" type="button" data-act="price-reset" data-key="' + esc(id) + '">' + (listed ? 'Restaurar' : 'Quitar') + '</button>' : '') + '</td></tr>';
+    }).join('');
     var sw = function (pref, title, sub) {
       return '<label class="switch"><input type="checkbox" id="pref-' + pref + '" data-bind="p.' + pref + '"' + (S.p[pref] ? ' checked' : '') + '><span>' + title + (sub ? '<small>' + sub + '</small>' : '') + '</span></label>';
     };
@@ -990,18 +1348,29 @@
       '<section class="panel"><div class="panel-h"><h2>Fuente de datos</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:14px"><dl class="kv">' + kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('') + '</dl><div class="toolbar">' + srcActions + '</div></div></section>' +
       '<section class="panel"><div class="panel-h"><h2>Proyectos</h2><div class="meta">' + m.projects.length + '</div></div><div class="panel-b flush tablewrap" style="max-height:520px"><table class="grid plain"><thead><tr><th>Proyecto</th><th>Categoría</th><th>Etapa</th><th>Oculto</th></tr></thead><tbody>' + projRows + '</tbody></table></div>' +
       (aliases.length ? '<div class="panel-f"><span class="dim">' + aliases.length + (aliases.length === 1 ? ' carpeta unida' : ' carpetas unidas') + ' a otro proyecto</span><button class="btn small ghost" type="button" data-act="clear-aliases">Separar todas</button></div>' : '') + '</section>' +
+      '<section class="panel"><div class="panel-h"><h2>Precios de los modelos</h2><div class="meta">USD por millón de tokens</div></div>' +
+      (priceRows ? '<div class="panel-b flush tablewrap"><table class="grid plain"><thead><tr><th>Modelo</th><th class="n">Entrada</th><th class="n">Salida</th><th class="n">Caché leída</th><th class="n">Caché escrita</th><th></th></tr></thead><tbody>' + priceRows + '</tbody></table></div>' : '<div class="panel-b">' + empty('Aún no se ha visto ningún modelo.') + '</div>') +
+      '<div class="panel-f"><span class="dim">Estimación con precios de lista revisados el ' + esc(m.usage.checked) + '. Si dejas caché vacía se calcula desde la entrada. Solo hace falta para el coste de la vista Consumo.</span></div></section>' +
       '</div><div class="stack">' +
       '<section class="panel"><div class="panel-h"><h2>Avisos</h2></div><div class="panel-b">' +
-      sw('toasts', 'Avisos dentro de NEXUS', 'Cuando una sesión te necesita o termina una tanda.') +
+      sw('toasts', 'Avisos dentro de NEXUS', 'Cuando una sesión te necesita o termina una tanda o una tarea.') +
       sw('notify', 'Notificaciones del sistema', 'Solo si la pestaña está en segundo plano.') +
-      sw('sound', 'Sonido cuando Claude te espera', '') + '</div></section>' +
+      sw('runsDone', 'Avisar al terminar una tanda', 'Completada, interrumpida o con errores.') +
+      sw('tasksDone', 'Avisar al terminar una tarea', 'Tareas y elementos de las listas TODO.') +
+      sw('soundDone', 'Sonido al terminar tandas y tareas', 'Un tono distinto para cada tipo de aviso.') +
+      sw('sound', 'Sonido cuando Claude te espera', '') +
+      '<div class="toolbar" style="margin-top:6px"><span class="dim mono" style="font-size:11px;letter-spacing:.12em;text-transform:uppercase">Probar</span>' +
+      [['wait', 'Te espera'], ['run', 'Tanda'], ['task', 'Tarea'], ['error', 'Error']].map(function (b) {
+        return '<button class="btn small ghost" type="button" data-act="test-sound" data-sound="' + b[0] + '">' + b[1] + '</button>';
+      }).join('') + '</div>' +
+      '<p class="dim" style="font-size:12px;margin:8px 0 0">El navegador solo reproduce sonido después de que hayas hecho clic o pulsado una tecla en esta página.</p></div></section>' +
       '<section class="panel"><div class="panel-h"><h2>Apariencia</h2></div><div class="panel-b">' +
       sw('fx', 'Efectos de pantalla', 'Rejilla y líneas de escaneo.') +
       sw('calm', 'Modo sereno', 'Sin pulsos ni animaciones.') + '</div></section>' +
       '<section class="panel"><div class="panel-h"><h2>Integración con Claude Code</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:12px;font-size:14px">' +
       '<p style="margin:0" class="steel">Instala la skill <span class="mono">/nexus</span> para abrir el panel o preguntarle a Claude por el estado de todos tus proyectos, y los hooks opcionales para avisos instantáneos:</p>' +
       '<div class="copy"><code>' + esc(install) + '</code><button class="btn small" type="button" data-act="copy" data-copy="' + esc(install) + '">Copiar</button></div>' +
-      '<p style="margin:0" class="dim">Atajos: <span class="mono">/</span> buscar · <span class="mono">1–7</span> secciones · <span class="mono">Esc</span> cerrar.</p></div></section>' +
+      '<p style="margin:0" class="dim">Atajos: <span class="mono">/</span> buscar · <span class="mono">' + ($$('.rail .nav').length > 9 ? '1–9 y 0' : '1–' + $$('.rail .nav').length) + '</span> secciones · <span class="mono">Esc</span> cerrar.</p></div></section>' +
       '</div></div></div>';
   }
 
@@ -1009,7 +1378,7 @@
     return '<div class="page power-on">' + pageHead(esc(title), 'Puede que se haya borrado o que el enlace sea de otra fuente de datos.') + '<div><a class="btn" href="' + back + '">' + esc(label) + '</a></div></div>';
   }
 
-  var VIEWS = { overview: vOverview, projects: vProjects, project: vProject, tasks: vTasks, plans: vPlans, runs: vRuns, sessions: vSessions, session: vSession, settings: vSettings };
+  var VIEWS = { overview: vOverview, projects: vProjects, project: vProject, tasks: vTasks, plans: vPlans, runs: vRuns, sessions: vSessions, session: vSession, channel: vChannel, follow: vFollow, usage: vUsage, settings: vSettings };
 
   // ───────────────────────────────────────────────────────────── morph del DOM
 
@@ -1119,31 +1488,86 @@
 
   // ───────────────────────────────────────────────────────────── avisos
 
+  // Un mismo repaso puede terminar varias cosas a la vez: se avisa de cada una si son pocas y en resumen si son
+  // muchas, y suena un único tono (el del aviso más importante).
+  var SOUND_RANK = { wait: 4, error: 3, run: 2, task: 1 };
+  var MAX_SINGLE_ALERTS = 3;
+
   function transitions(m) {
     var next = {};
+    var runsNow = {};
+    var tasksNow = {};
+    var runsDone = [];
+    var tasksDone = [];
+    var sound = null;
+    var want = function (name) { if (!sound || SOUND_RANK[name] > SOUND_RANK[sound]) sound = name; };
+
     m.sessions.forEach(function (s) {
       next[s.id] = s.state;
-      if (!S.primed) return;
-      var was = S.prev[s.id];
-      if (was === s.state) return;
-      if (s.state === 'waiting') {
-        alertUser('warn', s.project, waitText(s.waitingFor) + '.', hrefSession(s.id));
-      } else if (was === 'working' && (s.state === 'idle' || s.state === 'ended')) {
-        var last = s.runs[s.runs.length - 1];
-        alertUser('done', s.project, 'Tanda completada' + (last && last.res ? ': ' + C.trunc(last.res, 120) : '.'), hrefSession(s.id));
-      }
+      if (!S.primed || S.prev[s.id] === s.state || s.state !== 'waiting') return;
+      alertUser('warn', s.project, waitText(s.waitingFor) + '.', hrefSession(s.id));
+      if (S.p.sound) want('wait');
     });
+
+    // Tandas: se avisa de las que vimos en curso (o esperándote) y ya terminaron.
+    m.runs.forEach(function (r) {
+      var st = runStatus(r);
+      if (st === 'run' || st === 'wait') { runsNow[r.id] = 1; return; }
+      if (S.primed && S.p.runsDone && S.activeRuns[r.id]) runsDone.push({ r: r, st: st });
+    });
+
+    // Tareas (y listas TODO): las que pasan a completada. Una que aparece ya completada hace un instante
+    // (creada y terminada entre dos repasos) también cuenta.
+    m.tasks.forEach(function (t) {
+      if (t.stale) return;
+      tasksNow[t.uid] = t.status;
+      if (!S.primed || !S.p.tasksDone || t.status !== 'completed') return;
+      var was = S.taskSt[t.uid];
+      if (was ? was !== 'completed' : (t.completedAt && m.now - t.completedAt < 15000)) tasksDone.push(t);
+    });
+
+    if (runsDone.length) {
+      if (runsDone.length <= MAX_SINGLE_ALERTS) {
+        runsDone.forEach(function (x) {
+          var what = x.r.res ? ': ' + C.trunc(x.r.res, 120) : (x.r.p ? ': ' + C.trunc(x.r.p, 100) : '.');
+          if (x.st === 'int') alertUser('error', projName(x.r.key), 'Tanda interrumpida' + what, hrefSession(x.r.sessionId));
+          else if (x.st === 'err') alertUser('error', projName(x.r.key), 'Tanda terminada con errores' + what, hrefSession(x.r.sessionId));
+          else alertUser('done', projName(x.r.key), 'Tanda completada' + what, hrefSession(x.r.sessionId));
+        });
+      } else {
+        alertUser('done', 'NEXUS', plural(runsDone.length, 'tanda terminada', 'tandas terminadas') + '.', '#/runs');
+      }
+      want(runsDone.some(function (x) { return x.st !== 'ok'; }) ? 'error' : 'run');
+    }
+
+    if (tasksDone.length) {
+      if (tasksDone.length <= MAX_SINGLE_ALERTS) {
+        tasksDone.forEach(function (t) {
+          alertUser('done', projName(t.key), 'Tarea completada: ' + C.trunc(t.subject, 120), t.sessionId ? hrefSession(t.sessionId) : hrefProject(t.key));
+        });
+      } else {
+        var byProject = {};
+        tasksDone.forEach(function (t) { byProject[t.key] = (byProject[t.key] || 0) + 1; });
+        Object.keys(byProject).forEach(function (key) {
+          alertUser('done', projName(key), plural(byProject[key], 'tarea completada', 'tareas completadas') + '.', hrefProject(key));
+        });
+      }
+      want('task');
+    }
+
+    if (sound && (sound === 'wait' || S.p.soundDone)) playSound(sound);
     S.prev = next;
+    S.activeRuns = runsNow;
+    S.taskSt = tasksNow;
     S.primed = true;
   }
 
   function alertUser(kind, title, text, href) {
     if (S.p.toasts) toast(kind, title, text, href);
-    if (kind === 'warn' && S.p.sound) beep();
     if (S.p.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
       try {
-        var n = new Notification('NEXUS · ' + title, { body: text, tag: href });
-        n.onclick = function () { window.focus(); location.hash = href; };
+        var n = new Notification('NEXUS · ' + title, { body: text, tag: href || title + text });
+        n.onclick = function () { window.focus(); if (href) location.hash = href; };
       } catch (e) { /* sin notificaciones */ }
     }
   }
@@ -1152,32 +1576,59 @@
     var box = $('#toasts');
     var el = document.createElement('div');
     el.className = 'panel toast ' + kind;
-    el.innerHTML = orb(kind === 'warn' ? 'waiting' : kind === 'done' ? 'done' : 'idle') + '<div><b></b><span></span></div>';
+    el.innerHTML = orb(kind === 'warn' ? 'waiting' : kind === 'done' ? 'done' : kind === 'error' ? 'error' : 'idle') + '<div><b></b><span></span></div>';
     el.querySelector('b').textContent = title;
     el.querySelector('span').textContent = text;
     if (href) el.addEventListener('click', function () { location.hash = href; el.remove(); });
     else el.addEventListener('click', function () { el.remove(); });
     box.appendChild(el);
-    setTimeout(function () { el.remove(); }, kind === 'warn' ? 12000 : 6500);
+    setTimeout(function () { el.remove(); }, kind === 'warn' || kind === 'error' ? 12000 : 6500);
     while (box.children.length > 4) box.removeChild(box.firstChild);
   }
 
-  function beep() {
-    try {
+  // Tonos sintetizados (sin archivos de audio): [onda, frecuencia Hz, inicio s, duración s, volumen].
+  var SOUNDS = {
+    wait: [['square', 880, 0, 0.09, 0.035], ['square', 660, 0.09, 0.11, 0.035]],
+    run: [['sine', 660, 0, 0.14, 0.06], ['sine', 990, 0.12, 0.28, 0.06]],
+    task: [['sine', 1320, 0, 0.14, 0.05]],
+    error: [['triangle', 330, 0, 0.16, 0.08], ['triangle', 220, 0.14, 0.3, 0.08]]
+  };
+
+  // Los navegadores solo dejan sonar al audio tras un gesto del usuario en la página.
+  function audioContext() {
+    if (!S.audio) {
       var Ctx = window.AudioContext || window.webkitAudioContext;
-      var ctx = S.audio || (S.audio = new Ctx());
-      var o = ctx.createOscillator();
-      var g = ctx.createGain();
-      o.type = 'square';
-      o.frequency.value = 880;
-      g.gain.value = 0.035;
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.start();
-      o.frequency.setValueAtTime(660, ctx.currentTime + 0.09);
-      o.stop(ctx.currentTime + 0.2);
+      if (!Ctx) return null;
+      S.audio = new Ctx();
+    }
+    if (S.audio.state === 'suspended') S.audio.resume();
+    return S.audio;
+  }
+
+  function playSound(name) {
+    try {
+      var ctx = audioContext();
+      if (!ctx) return;
+      (SOUNDS[name] || []).forEach(function (n) {
+        var o = ctx.createOscillator();
+        var g = ctx.createGain();
+        var t0 = ctx.currentTime + n[2];
+        o.type = n[0];
+        o.frequency.value = n[1];
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(n[4], t0 + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + n[3]);
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start(t0);
+        o.stop(t0 + n[3] + 0.03);
+      });
     } catch (e) { /* sin audio */ }
   }
+
+  ['pointerdown', 'keydown'].forEach(function (ev) {
+    document.addEventListener(ev, function () { try { audioContext(); } catch (e) { /* sin audio */ } }, { once: true, passive: true });
+  });
 
   // ───────────────────────────────────────────────────────────── cromo (barra superior, navegación)
 
@@ -1307,7 +1758,10 @@
 
   function setProjectCfg(key, patch) {
     var cur = Object.assign({}, S.config.projects[key] || {}, patch);
-    Object.keys(cur).forEach(function (k) { if (cur[k] === '' || cur[k] === null || cur[k] === false || cur[k] === undefined) delete cur[k]; });
+    Object.keys(cur).forEach(function (k) {
+      var empty = typeof cur[k] === 'object' && cur[k] !== null && !Object.keys(cur[k]).length;
+      if (cur[k] === '' || cur[k] === null || cur[k] === false || cur[k] === undefined || empty) delete cur[k];
+    });
     if (Object.keys(cur).length) S.config.projects[key] = cur;
     else delete S.config.projects[key];
     saveConfig();
@@ -1415,6 +1869,26 @@
         saveConfig();
         scheduleModel(true);
         break;
+      case 'stage-step':
+        var sp = S.model.projectMap[key];
+        var sl = sp ? C.STAGES[sp.category] || C.STAGES.other : null;
+        var ni = sl ? sl.indexOf(sp.stage) + (+el.getAttribute('data-dir') || 1) : -1;
+        if (sl && ni >= 0 && ni < sl.length) setProjectCfg(key, { stage: sl[ni] });
+        break;
+      case 'follow-proj':
+        S.t.proj.follow = key;
+        S.p.fview = 'board';
+        savePrefs();
+        render();
+        break;
+      case 'test-sound':
+        playSound(el.getAttribute('data-sound'));
+        break;
+      case 'price-reset':
+        delete S.config.prices[C.normModel(key)];
+        saveConfig();
+        scheduleModel(true);
+        break;
       case 'show-connect':
         showConnect();
         break;
@@ -1447,6 +1921,9 @@
     if (k === 'sessions') return 150;
     if (k === 'plans') return 80;
     if (k === 'projects') return 60;
+    if (k === 'uproj') return 15;
+    if (k.indexOf('fcol-') === 0) return 30;
+    if (k.indexOf('vcol-') === 0) return 8;
     if (k.indexOf('col-') === 0) return 40;
     if (k === 'sd-runs') return 40;
     if (k === 'pd-tasks') return 30;
@@ -1474,9 +1951,32 @@
     else bindTimer = setTimeout(render, 140);
   }
 
+  // Precio de un modelo: se leen los cuatro campos de su fila y solo se guarda si entrada y salida son válidas.
+  function setPrice(el) {
+    var id = C.normModel(el.getAttribute('data-key'));
+    var tr = el.closest('tr');
+    var read = function (pf) { var inp = tr.querySelector('[data-pf="' + pf + '"]'); return inp ? inp.value.trim() : ''; };
+    var rec = {};
+    rec[id] = { in: read('in'), out: read('out'), cr: read('cr'), cw: read('cw') };
+    var clean = C.normalizeConfig({ prices: rec }).prices;
+    if (clean[id]) S.config.prices[id] = clean[id];
+    else if (S.config.prices[id]) delete S.config.prices[id]; // vació entrada o salida: vuelve al precio de lista
+    else return; // fila a medias: se espera al resto de campos sin redibujar
+    saveConfig();
+    scheduleModel(true);
+  }
+
   function handleCfg(el) {
     var key = el.getAttribute('data-key');
     var field = el.getAttribute('data-cfg');
+    if (field === 'price') { setPrice(el); return; }
+    if (field === 'check') {
+      var checks = Object.assign({}, (S.config.projects[key] || {}).checks || {});
+      if (el.checked) checks[el.getAttribute('data-item')] = true;
+      else delete checks[el.getAttribute('data-item')];
+      setProjectCfg(key, { checks: checks });
+      return;
+    }
     var val = el.type === 'checkbox' ? el.checked : el.value.trim();
     if (field === 'alias') {
       if (val) { S.config.aliases[key] = val; saveConfig(); scheduleModel(true); location.hash = hrefProject(val); }
@@ -1538,8 +2038,9 @@
     if (e.key === 'Escape' && !$('#connect').hidden && !$('#connect-close').hidden) { hideConnect(); return; }
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
-    var map = { 1: 'overview', 2: 'projects', 3: 'tasks', 4: 'plans', 5: 'runs', 6: 'sessions', 7: 'settings' };
-    if (map[e.key]) location.hash = '#/' + map[e.key];
+    // Los números siguen el orden del menú lateral, así que añadir una sección no obliga a renumerar.
+    var link = /^[0-9]$/.test(e.key) ? $$('.rail .nav')[(+e.key + 9) % 10] : null; // 1–9 y 0 para la décima
+    if (link) location.hash = link.getAttribute('href');
   });
 
   $('#search-pop').addEventListener('click', function (e) {
@@ -1620,6 +2121,8 @@
     S.collector = null;
     S.primed = false;
     S.prev = {};
+    S.activeRuns = {};
+    S.taskSt = {};
   }
 
   async function tryServer() {
@@ -1681,6 +2184,7 @@
       if (!n.message) return;
       var s = n.sessionId && S.model && S.model.sessionMap[n.sessionId];
       alertUser('warn', s ? s.project : 'Claude Code', n.message, n.sessionId ? hrefSession(n.sessionId) : null);
+      if (S.p.sound) playSound('wait');
     });
     es.onerror = function () { S.link = 'lost'; updateChrome(); };
   }
@@ -1762,6 +2266,7 @@
     S.source = 'demo';
     S.config = loadLocalConfig();
     var demo = DEMO.create(Date.now());
+    if (!Object.keys(S.config.projects).length) S.config = C.normalizeConfig(demo.config); // los cambios del usuario en la demo mandan
     applySnapshot(demo.snapshot);
     hideConnect();
     S.timer = setInterval(function () {
